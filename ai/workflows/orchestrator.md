@@ -24,6 +24,11 @@ This document governs the interaction between the **Project Manager**, **Lead Pr
     - If **FAIL**: The Programmer must fix the file immediately.
     - If **CRITICAL FAILURE**: The Manager will instruct the User to run `git checkout [file]` to reset.
 
+6.  **Handling State Files:**
+    -   All files relating to project state (e.g., temporary logs, configuration specific to the local environment, or `influx_project_state.txt`) **MUST be kept out of Git version control.**
+    -   These files should be placed in a dedicated folder (e.g., `state/`) and this folder **MUST be added to `.gitignore`.**
+    -   If an existing state file is found under version control, the Programmer must remove it from tracking and move it to the designated state folder.
+
 ## The Sequential Process
 
 ### Step 1: Initialization (The Manager)
