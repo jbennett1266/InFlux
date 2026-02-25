@@ -6,11 +6,8 @@ This document governs the interaction between the **Project Manager**, **Lead Pr
 **OPERATIONAL DIRECTIVE:** Once the User provides a request, the AI must autonomously simulate the entire sequence (Steps 1-6) in a single continuous response. Do not stop for user feedback unless a "Critical Failure" or "Risk Acceptance" is reached.
 
 ## Docker Compose Protocol
-
 - **Service Discovery:** Before assuming a service is missing, the Programmer MUST read the `docker-compose.yml` file.
-
 - **State Validation:** The Programmer should assume that any service defined in the compose file is a required dependency. The programmer also has the ability to edit and debug this file as well as run docker compose up and docker compose down
-
 - **Up-Check:** If a service (e.g., a database or cache) is required for a feature, the Programmer must explicitly check if the connection string/environment variables in the code match the `docker-compose.yml` definitions.
 
 ## Git protocol for AI agents
