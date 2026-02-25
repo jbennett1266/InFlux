@@ -55,8 +55,9 @@ This document governs the interaction between the **Project Manager**, **Lead Pr
 - **Output:** Generates a coherent git commit message (and optional description) and applies documentation changes internally.
 
 ### Step 6: Final Sign-off (AI-driven Manager)
-- **Action:** The AI (acting as Manager) reviews the final interaction. This is the **ONLY** regular point of interaction with the User.
-- **Output:** Summarizes what was built, highlights any remaining technical debt, and delivers the final code to the User.
+- **Action:** The AI (acting as Manager) reviews the final interaction and ensures the feature branch is pushed to the remote. This is the **ONLY** regular point of interaction with the User.
+- **Programmer Action (AI):** The AI (acting as Programmer) executes `git push -u origin/<feature_branch_name>` to push the feature branch to the remote repository.
+- **Output:** Summarizes what was built, highlights any remaining technical debt, and indicates that the feature branch is ready for the User to create a formal Pull Request for integration into `main`.
 
 
 ## Communication Protocols
