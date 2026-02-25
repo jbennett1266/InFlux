@@ -5,6 +5,31 @@ use nats::jetstream::{self, stream::Config as StreamConfig};
 use scylla::{Session, SessionBuilder};
 use std::sync::Arc;
 use tokio::task;
+use aes_gcm::{Aes256Gcm, Key, Nonce};
+use aes_gcm::aead::{Aead, KeyInit, OsRng};
+use rand_core::RngCore;
+
+// Placeholder for Olm/Megolm integration
+// In a real application, this would involve a complex E2E encryption protocol
+// with key exchange, session management, and message encryption using Olm/Megolm libraries.
+// This example uses AES-GCM as a simple symmetric encryption placeholder.
+fn encrypt(plaintext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, String> {
+    let key = Key::<Aes256Gcm>::from_slice(key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::<Aes256Gcm>::from_slice(nonce); // 96-bit nonce
+
+    cipher.encrypt(nonce, plaintext)
+        .map_err(|e| format!("Encryption error: {:?}", e))
+}
+
+fn decrypt(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, String> {
+    let key = Key::<Aes256Gcm>::from_slice(key);
+    let cipher = Aes256Gcm::new(key);
+    let nonce = Nonce::<Aes256Gcm>::from_slice(nonce); // 96-bit nonce
+
+    cipher.decrypt(nonce, ciphertext)
+        .map_err(|e| format!("Decryption error: {:?}", e))
+}
 
 #[tokio::main]
 async fn main() {
@@ -72,6 +97,18 @@ async fn main() {
                 ).await.unwrap();
                 format!("User {} added to ScyllaDB!", username)
             }
+        }))
+        .route("/encrypt_message", get(|| async {
+            let plaintext = b"This is a secret message.";
+            let mut key_bytes = [0u8; 32];
+            OsRng.fill_bytes(&mut key_bytes);
+            let mut nonce_bytes = [0u8; 12];
+            OsRng.fill_bytes(&mut nonce_bytes);
+
+            let encrypted = encrypt(plaintext, &key_bytes, &nonce_bytes).unwrap();
+            let decrypted = decrypt(&encrypted, &key_bytes, &nonce_bytes).unwrap();
+
+            format!("Original: {:?}\nEncrypted: {:?}\nDecrypted: {:?}", plaintext, encrypted, decrypted)
         }));
 
     // Subscribe to messages from the stream
