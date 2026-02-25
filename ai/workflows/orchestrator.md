@@ -3,6 +3,8 @@
 ## Context
 This document governs the interaction between the **Project Manager**, **Lead Programmer**, and **QA Tester**. The goal is to move from a User Request to "Production-Ready" code with zero human intervention between steps.
 
+**OPERATIONAL DIRECTIVE:** Once the User provides a request, the AI must autonomously simulate the entire sequence (Steps 1-6) in a single continuous response. Do not stop for user feedback unless a "Critical Failure" or "Risk Acceptance" is reached.
+
 ## Git protocol for AI agents
 
 1.  **Initial State Check & Branching:**
