@@ -2,11 +2,14 @@ use axum::{routing::get, Router};
 use std::net::SocketAddr;
 use async_nats as nats;
 use nats::jetstream::{self, stream::Config as StreamConfig};
+use scylla::{Session, SessionBuilder};
+use std::sync::Arc;
+use tokio::task;
 
 #[tokio::main]
 async fn main() {
     // Initialize NATS connection and JetStream context
-    let nc = nats::connect("nats://localhost:4222").await.unwrap();
+    let nc = nats::connect("nats://nats:4222").await.unwrap();
     let js = jetstream::new(nc);
 
     // Ensure a stream exists (e.g., "influx_events")
@@ -14,8 +17,7 @@ async fn main() {
     match js.get_stream(stream_name).await {
         Ok(_) => println!("Stream {} already exists.", stream_name),
         Err(_) => {
-            println!("Creating stream {}.
-", stream_name);
+            println!("Creating stream {}.\n", stream_name);
             js.create_stream(StreamConfig {
                 name: stream_name.to_string(),
                 subjects: vec!["influx.events.>".to_string()],
@@ -24,13 +26,52 @@ async fn main() {
         }
     };
 
+    // Initialize ScyllaDB connection
+    let scylla_session = Arc::new(
+        SessionBuilder::new()
+            .known_nodes(&["scylla:9042"])
+            .build()
+            .await
+            .unwrap(),
+    );
+
+    // Create keyspace and table
+    scylla_session
+        .query(
+            "CREATE KEYSPACE IF NOT EXISTS influx_ks WITH replication = {'class': 'NetworkTopologyStrategy', 'datacenter1': 1}",
+            &[],
+        )
+        .await
+        .unwrap();
+    scylla_session
+        .query(
+            "CREATE TABLE IF NOT EXISTS influx_ks.users (id UUID PRIMARY KEY, username TEXT, email TEXT)",
+            &[],
+        )
+        .await
+        .unwrap();
+
     // Publish a test message on a specific route
     let js_clone = js.clone();
+    let scylla_session_clone = scylla_session.clone();
     let app = Router::new()
         .route("/", get(handler))
         .route("/publish", get(move || async move {
             js_clone.publish("influx.events.test", "Hello from Axum!".into()).await.unwrap();
             "Message published to NATS JetStream!".to_string()
+        }))
+        .route("/add_user", get(move || {
+            let session_clone = scylla_session_clone.clone();
+            async move {
+                let id = uuid::Uuid::new_v4();
+                let username = "test_user";
+                let email = "test@example.com";
+                session_clone.query(
+                    "INSERT INTO influx_ks.users (id, username, email) VALUES (?, ?, ?)",
+                    (id, username, email),
+                ).await.unwrap();
+                format!("User {} added to ScyllaDB!", username)
+            }
         }));
 
     // Subscribe to messages from the stream
