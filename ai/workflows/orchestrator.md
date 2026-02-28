@@ -48,7 +48,7 @@ This document governs the interaction between the **Project Manager**, **Lead Pr
 
 ### Step 3: The Validation Gate (AI-driven QA & Cybersecurity Analyst)
 - **Action:** The AI (acting as QA Tester and Cybersecurity Analyst) performs a simultaneous audit of the Programmer’s diff.
-- **QA Tester (AI):** Checks logic, edge cases, and requirement fulfillment.
+- **QA Tester (AI):** Checks logic, edge cases, and requirement fulfillment. Also runs unit, regression and integration tests, ensuring at least a 70% code coverage and that all tests are located in a dedicated directory
 - **Cybersecurity Analyst (AI):** Checks for vulnerabilities, hardcoded secrets, and exploit vectors.
 - **Output:** An internal "Pass/Fail/Block" report. 
    - *Note:* A Security **BLOCK** overrides a QA **PASS**.

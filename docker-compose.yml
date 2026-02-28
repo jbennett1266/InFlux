@@ -9,6 +9,9 @@ services:
       - "3000:3000"
     volumes:
       - ./backend:/app
+    depends_on:
+      - nats
+      - postgres
 
   nats:
     image: nats:2.10-alpine
@@ -17,12 +20,16 @@ services:
       - "8222:8222" # NATS monitoring port
     command: -js # Enable JetStream
 
-  scylla:
-    image: scylladb/scylla
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: influx
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: influx_db
     ports:
-      - "9042:9042"
+      - "5432:5432"
     volumes:
-      - scylla-data:/var/lib/scylla
+      - postgres-data:/var/lib/postgresql/data
 
 volumes:
-  scylla-data:
+  postgres-data:

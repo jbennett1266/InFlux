@@ -2,7 +2,7 @@ use axum::{routing::get, Router};
 use std::net::SocketAddr;
 use async_nats as nats;
 use nats::jetstream::{self, stream::Config as StreamConfig, consumer::DeliverPolicy};
-use scylla::SessionBuilder;
+use sqlx::postgres::PgPoolOptions;
 use futures::StreamExt;
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use chacha20poly1305::aead::{Aead, KeyInit};
 use rand::RngCore;
 use rand::rngs::OsRng;
 
-fn encrypt(plaintext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, String> {
+pub fn encrypt(plaintext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, String> {
     let key = Key::from_slice(key);
     let cipher = ChaCha20Poly1305::new(key);
     let nonce = Nonce::from_slice(nonce); // 12-byte nonce
@@ -20,7 +20,7 @@ fn encrypt(plaintext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, String
         .map_err(|e| format!("Encryption error: {:?}", e))
 }
 
-fn decrypt(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, String> {
+pub fn decrypt(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, String> {
     let key = Key::from_slice(key);
     let cipher = ChaCha20Poly1305::new(key);
     let nonce = Nonce::from_slice(nonce); // 12-byte nonce
@@ -29,71 +29,66 @@ fn decrypt(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, Strin
         .map_err(|e| format!("Decryption error: {:?}", e))
 }
 
-#[tokio::main]
-async fn main() {
-    // Initialize NATS connection and JetStream context
-    let nc = nats::connect("nats://nats:4222").await.unwrap();
+pub async fn setup_nats(stream_name: &str, nats_url: &str, subject: &str) -> nats::jetstream::Context {
+    let nc = nats::connect(nats_url).await.expect("Failed to connect to NATS");
     let js = jetstream::new(nc);
 
-    // Ensure a stream exists (e.g., "influx_events")
-    let stream_name = "influx_events";
     match js.get_stream(stream_name).await {
         Ok(_) => println!("Stream {} already exists.", stream_name),
         Err(_) => {
             println!("Creating stream {}.\n", stream_name);
             js.create_stream(StreamConfig {
                 name: stream_name.to_string(),
-                subjects: vec!["influx.events.>".to_string(), "influx.events.*".to_string()],
+                subjects: vec![subject.to_string()],
                 ..Default::default()
-            }).await.unwrap();
+            }).await.expect("Failed to create stream");
         }
     };
+    js
+}
 
-    // Initialize ScyllaDB connection
-    let scylla_session = Arc::new(
-        SessionBuilder::new()
-            .known_nodes(&["scylla:9042"])
-            .build()
-            .await
-            .unwrap(),
-    );
-
-    // Create keyspace and table
-    scylla_session
-        .query(
-            "CREATE KEYSPACE IF NOT EXISTS influx_ks WITH replication = {'class': 'NetworkTopologyStrategy', 'datacenter1': 1}",
-            &[],
-        )
+pub async fn setup_postgres(postgres_url: &str) -> sqlx::PgPool {
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(postgres_url)
         .await
-        .unwrap();
-    scylla_session
-        .query(
-            "CREATE TABLE IF NOT EXISTS influx_ks.users (id UUID PRIMARY KEY, username TEXT, email TEXT)",
-            &[],
-        )
-        .await
-        .unwrap();
+        .expect("Failed to connect to PostgreSQL");
 
-    // Publish a test message on a specific route
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY, username TEXT, email TEXT)"
+    )
+    .execute(&pool)
+    .await
+    .expect("Failed to create table");
+
+    pool
+}
+
+pub fn create_router(js: nats::jetstream::Context, pool: sqlx::PgPool) -> Router {
     let js_clone = js.clone();
-    let scylla_session_clone = scylla_session.clone();
-    let app = Router::new()
+    let pool_clone = pool.clone();
+    Router::new()
         .route("/", get(handler))
         .route("/publish", get(move || async move {
             js_clone.publish("influx.events.test", "Hello from Axum!".into()).await.unwrap();
             "Message published to NATS JetStream!".to_string()
         }))
         .route("/add_user", get(move || {
-            let session_clone = scylla_session_clone.clone();
+            let pool_inner = pool_clone.clone();
             async move {
                 let id = uuid::Uuid::new_v4();
                 let username = "test_user";
                 let email = "test@example.com";
-                session_clone.query(
-                    "INSERT INTO influx_ks.users (id, username, email) VALUES (?, ?, ?)",
-                    (id, username, email),
-                ).await.unwrap();
-                format!("User {} added to ScyllaDB!", username)
+                sqlx::query(
+                    "INSERT INTO users (id, username, email) VALUES ($1, $2, $3)"
+                )
+                .bind(id)
+                .bind(username)
+                .bind(email)
+                .execute(&pool_inner)
+                .await
+                .unwrap();
+                format!("User {} added to PostgreSQL!", username)
             }
         }))
         .route("/encrypt_message", get(|| async {
@@ -108,9 +103,10 @@ async fn main() {
             let decrypted = decrypt(&encrypted, &key_bytes, &nonce_bytes).unwrap();
 
             format!("Original: {:?}\nEncrypted: {:?}\nDecrypted: {:?}", plaintext, encrypted, decrypted)
-        }));
+        }))
+}
 
-    // Subscribe to messages from the stream
+pub async fn start_consumer(js: nats::jetstream::Context, stream_name: &str) {
     let stream = js.get_stream(stream_name).await.unwrap();
     let consumer_config = nats::jetstream::consumer::pull::Config {
         name: Some("my_consumer".to_string()),
@@ -125,6 +121,16 @@ async fn main() {
             msg.ack().await.unwrap();
         }
     });
+}
+
+#[tokio::main]
+async fn main() {
+    let stream_name = "influx_events";
+    let js = setup_nats(stream_name, "nats://nats:4222", "influx.events.>").await;
+    let pool = setup_postgres("postgres://influx:password@postgres:5432/influx_db").await;
+    let app = create_router(js.clone(), pool);
+
+    start_consumer(js, stream_name).await;
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     println!("listening on {}", addr);
@@ -133,57 +139,6 @@ async fn main() {
         .unwrap();
 }
 
-async fn handler() -> String {
+pub async fn handler() -> String {
     "Hello, InFlux Backend!".to_string()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_encryption_decryption() {
-        let plaintext = b"This is a test message.";
-        let mut key_bytes = [0u8; 32];
-        let mut csprng = OsRng;
-        csprng.fill_bytes(&mut key_bytes);
-        let mut nonce_bytes = [0u8; 12];
-        csprng.fill_bytes(&mut nonce_bytes);
-
-        let encrypted = encrypt(plaintext, &key_bytes, &nonce_bytes).unwrap();
-        let decrypted = decrypt(&encrypted, &key_bytes, &nonce_bytes).unwrap();
-
-        assert_eq!(plaintext.to_vec(), decrypted);
-    }
-
-    #[test]
-    fn test_encryption_failure() {
-        let plaintext = b"Short message";
-        let key_bytes = [0u8; 32];
-        let nonce_bytes = [0u8; 12];
-
-        let encrypted = encrypt(plaintext, &key_bytes, &nonce_bytes).unwrap();
-
-        // Corrupt the ciphertext to test decryption failure
-        let mut corrupted_ciphertext = encrypted.clone();
-        corrupted_ciphertext[0] ^= 0x01;
-
-        let result = decrypt(&corrupted_ciphertext, &key_bytes, &nonce_bytes);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_decryption_failure() {
-        let plaintext = b"Another message";
-        let key_bytes = [0u8; 32];
-        let nonce_bytes = [0u8; 12];
-
-        let encrypted = encrypt(plaintext, &key_bytes, &nonce_bytes).unwrap();
-
-        // Use an incorrect key for decryption
-        let incorrect_key_bytes = [1u8; 32];
-
-        let result = decrypt(&encrypted, &incorrect_key_bytes, &nonce_bytes);
-        assert!(result.is_err());
-    }
 }
