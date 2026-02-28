@@ -13,6 +13,15 @@ services:
       - nats
       - cassandra
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3002:3000"
+    depends_on:
+      - backend
+
   nats:
     image: nats:2.10-alpine
     ports:
