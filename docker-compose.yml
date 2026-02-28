@@ -11,7 +11,7 @@ services:
       - ./backend:/app
     depends_on:
       - nats
-      - postgres
+      - cassandra
 
   nats:
     image: nats:2.10-alpine
@@ -20,16 +20,14 @@ services:
       - "8222:8222" # NATS monitoring port
     command: -js # Enable JetStream
 
-  postgres:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_USER: influx
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: influx_db
+  cassandra:
+    image: cassandra:latest
     ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=influx_cluster
+      - CASSANDRA_DC=dc1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
 
 volumes:
-  postgres-data:
+  cassandra-data:

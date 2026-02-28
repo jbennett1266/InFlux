@@ -2,9 +2,10 @@ use axum::{routing::get, Router};
 use std::net::SocketAddr;
 use async_nats as nats;
 use nats::jetstream::{self, stream::Config as StreamConfig, consumer::DeliverPolicy};
-use sqlx::postgres::PgPoolOptions;
+use scylla::{Session, SessionBuilder};
 use futures::StreamExt;
 use std::sync::Arc;
+use tokio::time::{sleep, Duration};
 
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use chacha20poly1305::aead::{Aead, KeyInit};
@@ -47,26 +48,50 @@ pub async fn setup_nats(stream_name: &str, nats_url: &str, subject: &str) -> nat
     js
 }
 
-pub async fn setup_postgres(postgres_url: &str) -> sqlx::PgPool {
-    let pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(postgres_url)
+pub async fn setup_cassandra(cassandra_url: &str) -> Arc<Session> {
+    let mut retry_count = 0;
+    let max_retries = 15;
+    let session = loop {
+        match SessionBuilder::new()
+            .known_nodes(&[cassandra_url])
+            .build()
+            .await {
+                Ok(s) => break s,
+                Err(e) => {
+                    if retry_count >= max_retries {
+                        panic!("Failed to connect to Cassandra after {} retries: {:?}", max_retries, e);
+                    }
+                    println!("Cassandra not ready, retrying in 5s... ({}/{})", retry_count + 1, max_retries);
+                    sleep(Duration::from_secs(5)).await;
+                    retry_count += 1;
+                }
+            }
+    };
+
+    let scylla_session = Arc::new(session);
+
+    scylla_session
+        .query(
+            "CREATE KEYSPACE IF NOT EXISTS influx_ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}",
+            &[],
+        )
         .await
-        .expect("Failed to connect to PostgreSQL");
+        .expect("Failed to create keyspace");
+    
+    scylla_session
+        .query(
+            "CREATE TABLE IF NOT EXISTS influx_ks.users (id UUID PRIMARY KEY, username TEXT, email TEXT)",
+            &[],
+        )
+        .await
+        .expect("Failed to create table");
 
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY, username TEXT, email TEXT)"
-    )
-    .execute(&pool)
-    .await
-    .expect("Failed to create table");
-
-    pool
+    scylla_session
 }
 
-pub fn create_router(js: nats::jetstream::Context, pool: sqlx::PgPool) -> Router {
+pub fn create_router(js: nats::jetstream::Context, scylla_session: Arc<Session>) -> Router {
     let js_clone = js.clone();
-    let pool_clone = pool.clone();
+    let scylla_session_clone = scylla_session.clone();
     Router::new()
         .route("/", get(handler))
         .route("/publish", get(move || async move {
@@ -74,21 +99,21 @@ pub fn create_router(js: nats::jetstream::Context, pool: sqlx::PgPool) -> Router
             "Message published to NATS JetStream!".to_string()
         }))
         .route("/add_user", get(move || {
-            let pool_inner = pool_clone.clone();
+            let session_clone = scylla_session_clone.clone();
             async move {
                 let id = uuid::Uuid::new_v4();
                 let username = "test_user";
                 let email = "test@example.com";
-                sqlx::query(
-                    "INSERT INTO users (id, username, email) VALUES ($1, $2, $3)"
-                )
-                .bind(id)
-                .bind(username)
-                .bind(email)
-                .execute(&pool_inner)
-                .await
-                .unwrap();
-                format!("User {} added to PostgreSQL!", username)
+                match session_clone.query(
+                    "INSERT INTO influx_ks.users (id, username, email) VALUES (?, ?, ?)",
+                    (id, username, email),
+                ).await {
+                    Ok(_) => format!("User {} added to Cassandra!", username),
+                    Err(e) => {
+                        println!("Failed to insert user: {:?}", e);
+                        format!("Error: {:?}", e)
+                    }
+                }
             }
         }))
         .route("/encrypt_message", get(|| async {
@@ -127,8 +152,8 @@ pub async fn start_consumer(js: nats::jetstream::Context, stream_name: &str) {
 async fn main() {
     let stream_name = "influx_events";
     let js = setup_nats(stream_name, "nats://nats:4222", "influx.events.>").await;
-    let pool = setup_postgres("postgres://influx:password@postgres:5432/influx_db").await;
-    let app = create_router(js.clone(), pool);
+    let scylla_session = setup_cassandra("cassandra:9042").await;
+    let app = create_router(js.clone(), scylla_session);
 
     start_consumer(js, stream_name).await;
 

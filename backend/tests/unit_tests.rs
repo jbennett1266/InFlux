@@ -1,8 +1,8 @@
-use chacha20poly1305::aead::{Aead, KeyInit};
-use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use influx_backend::*;
 use rand::rngs::OsRng;
 use rand::RngCore;
+use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
+use chacha20poly1305::aead::{Aead, KeyInit};
 
 #[test]
 fn test_encryption_decryption() {
@@ -58,11 +58,18 @@ async fn test_handler() {
 
 #[tokio::test]
 async fn test_create_router() {
-    let stream_name = "test_router_events";
-    let js = setup_nats(stream_name, "nats://localhost:4222", "test.router.>").await;
-    let pool = setup_postgres("postgres://influx:password@localhost:5432/influx_db").await;
-    let _app = create_router(js, pool);
-    // Just asserting that it creates the router without panicking
+    let stream_name = "unit_test_stream";
+    let js = setup_nats(stream_name, "nats://localhost:4222", "unit.test.>").await;
+    let scylla_session = setup_cassandra("localhost:9042").await;
+    let _app = create_router(js, scylla_session);
+    assert!(true);
+}
+
+#[tokio::test]
+async fn test_start_consumer() {
+    let stream_name = "consumer_test_stream";
+    let js = setup_nats(stream_name, "nats://localhost:4222", "consumer.test.>").await;
+    start_consumer(js, stream_name).await;
     assert!(true);
 }
 

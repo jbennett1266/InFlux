@@ -16,3 +16,4 @@ maintainable, and performant code that meets the user's functional requirements.
 - Use DRY (Don't Repeat Yourself) principles.
 - Do not include test cases (leave this to the QA Tester).
 - If a requirement is ambiguous, make a logical assumption and document it.
+- You are restricted from running git push and git commit commands. Only the scribe can do that
