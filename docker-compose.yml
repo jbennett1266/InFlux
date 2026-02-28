@@ -9,3 +9,25 @@ services:
       - "3000:3000"
     volumes:
       - ./backend:/app
+    depends_on:
+      - nats
+      - cassandra
+
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222" # NATS monitoring port
+    command: -js # Enable JetStream
+
+  cassandra:
+    image: cassandra:latest
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=influx_cluster
+      - CASSANDRA_DC=dc1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+
+volumes:
+  cassandra-data:
