@@ -53,5 +53,6 @@ async fn wait_for_cassandra(url: &str) {
 
 pub async fn cleanup_database(session: &Session) {
     session.query("TRUNCATE influx_ks.users", &[]).await.ok();
-    sleep(Duration::from_millis(100)).await;
+    session.query("TRUNCATE influx_ks.messages", &[]).await.ok();
+    sleep(Duration::from_millis(200)).await;
 }

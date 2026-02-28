@@ -1,4 +1,4 @@
-use axum::{routing::get, Router, Json};
+use axum::{routing::{get, post}, Router, Json};
 use std::net::SocketAddr;
 use async_nats as nats;
 use nats::jetstream::{self, stream::Config as StreamConfig, consumer::DeliverPolicy};
@@ -14,6 +14,15 @@ use chacha20poly1305::aead::{Aead, KeyInit};
 use rand::RngCore;
 use rand::rngs::OsRng;
 use x25519_dalek::{StaticSecret, PublicKey};
+use uuid::Uuid;
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Message {
+    pub id: Uuid,
+    pub sender: String,
+    pub content: String,
+    pub timestamp: i64,
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct KeyPairResponse {
@@ -22,27 +31,12 @@ pub struct KeyPairResponse {
 }
 
 #[derive(Deserialize)]
-pub struct EncryptRequest {
-    pub message: String,
-    pub recipient_public_key: String,
+pub struct SendMessageRequest {
+    pub sender: String,
+    pub content: String,
 }
 
-#[derive(Serialize)]
-pub struct EncryptResponse {
-    pub ciphertext: String,
-    pub ephemeral_public_key: String,
-    pub nonce: String,
-}
-
-#[derive(Deserialize)]
-pub struct DecryptRequest {
-    pub ciphertext: String,
-    pub ephemeral_public_key: String,
-    pub nonce: String,
-    pub recipient_private_key: String,
-}
-
-// --- E2EE Logic ---
+// --- Cryptography ---
 
 pub fn derive_shared_secret(my_private: &StaticSecret, their_public: &PublicKey) -> [u8; 32] {
     let shared = my_private.diffie_hellman(their_public);
@@ -54,7 +48,6 @@ pub fn symmetric_encrypt(plaintext: &[u8], key: &[u8; 32]) -> (Vec<u8>, [u8; 12]
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
-    
     let ciphertext = cipher.encrypt(nonce, plaintext).expect("Encryption failed");
     (ciphertext, nonce_bytes)
 }
@@ -62,25 +55,22 @@ pub fn symmetric_encrypt(plaintext: &[u8], key: &[u8; 32]) -> (Vec<u8>, [u8; 12]
 pub fn symmetric_decrypt(ciphertext: &[u8], key: &[u8; 32], nonce_bytes: &[u8; 12]) -> Result<Vec<u8>, String> {
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     let nonce = Nonce::from_slice(nonce_bytes);
-    
     cipher.decrypt(nonce, ciphertext).map_err(|e| format!("Decryption error: {:?}", e))
 }
 
-// --- Setup Functions ---
+// --- Infrastructure ---
 
 pub async fn setup_nats(stream_name: &str, nats_url: &str, subject: &str) -> nats::jetstream::Context {
     let nc = nats::connect(nats_url).await.expect("Failed to connect to NATS");
     let js = jetstream::new(nc);
-
     match js.get_stream(stream_name).await {
-        Ok(_) => println!("Stream {} already exists.", stream_name),
+        Ok(_) => (),
         Err(_) => {
-            println!("Creating stream {}.\n", stream_name);
             js.create_stream(StreamConfig {
                 name: stream_name.to_string(),
                 subjects: vec![subject.to_string()],
                 ..Default::default()
-            }).await.expect("Failed to create stream");
+            }).await.ok();
         }
     };
     js
@@ -88,97 +78,106 @@ pub async fn setup_nats(stream_name: &str, nats_url: &str, subject: &str) -> nat
 
 pub async fn setup_cassandra(cassandra_url: &str) -> Arc<Session> {
     let mut retry_count = 0;
-    let max_retries = 15;
     let session = loop {
-        match SessionBuilder::new()
-            .known_nodes(&[cassandra_url])
-            .build()
-            .await {
-                Ok(s) => break s,
-                Err(e) => {
-                    if retry_count >= max_retries {
-                        panic!("Failed to connect to Cassandra after {} retries: {:?}", max_retries, e);
-                    }
-                    println!("Cassandra not ready, retrying in 5s... ({}/{})", retry_count + 1, max_retries);
-                    sleep(Duration::from_secs(5)).await;
-                    retry_count += 1;
-                }
+        match SessionBuilder::new().known_nodes(&[cassandra_url]).build().await {
+            Ok(s) => break s,
+            Err(_) if retry_count < 15 => {
+                sleep(Duration::from_secs(5)).await;
+                retry_count += 1;
             }
+            Err(e) => panic!("Cassandra failed: {:?}", e),
+        }
     };
-
     let scylla_session = Arc::new(session);
     scylla_session.query("CREATE KEYSPACE IF NOT EXISTS influx_ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}", &[]).await.ok();
     scylla_session.query("CREATE TABLE IF NOT EXISTS influx_ks.users (id UUID PRIMARY KEY, username TEXT, email TEXT)", &[]).await.ok();
+    // clustering key for time-based retrieval
+    scylla_session.query("CREATE TABLE IF NOT EXISTS influx_ks.messages (channel_id TEXT, message_id UUID, sender TEXT, content TEXT, timestamp BIGINT, PRIMARY KEY (channel_id, timestamp)) WITH CLUSTERING ORDER BY (timestamp DESC)", &[]).await.ok();
     scylla_session
 }
 
 pub fn create_router(js: nats::jetstream::Context, scylla_session: Arc<Session>) -> Router {
     let js_clone = js.clone();
-    let scylla_session_clone = scylla_session.clone();
+    let scylla_clone = scylla_session.clone();
     
     Router::new()
         .route("/", get(handler))
-        .route("/publish", get(move || {
-            let js_inner = js_clone.clone();
-            async move {
-                let unique_subject = format!("influx.events.test.{}", uuid::Uuid::new_v4());
-                match js_inner.publish(unique_subject, "Hello from Axum!".into()).await {
-                    Ok(_) => "Message published to NATS JetStream!".to_string(),
-                    Err(e) => format!("Error: {:?}", e)
-                }
-            }
-        }))
-        .route("/add_user", get(move || {
-            let session_clone = scylla_session_clone.clone();
-            async move {
-                let id = uuid::Uuid::new_v4();
-                let username = "test_user";
-                let email = "test@example.com";
-                match session_clone.query("INSERT INTO influx_ks.users (id, username, email) VALUES (?, ?, ?)", (id, username, email)).await {
-                    Ok(_) => format!("User {} added to Cassandra!", username),
-                    Err(e) => format!("Error: {:?}", e)
-                }
-            }
-        }))
         .route("/generate_keys", get(|| async {
-            let alice_secret = StaticSecret::random_from_rng(OsRng);
-            let alice_public = PublicKey::from(&alice_secret);
-            
+            let secret = StaticSecret::random_from_rng(OsRng);
+            let public = PublicKey::from(&secret);
             Json(KeyPairResponse {
-                public_key: general_purpose::STANDARD.encode(alice_public.as_bytes()),
-                private_key: general_purpose::STANDARD.encode(alice_secret.to_bytes()),
+                public_key: general_purpose::STANDARD.encode(public.as_bytes()),
+                private_key: general_purpose::STANDARD.encode(secret.to_bytes()),
             })
+        }))
+        .route("/publish", post(move |Json(payload): Json<SendMessageRequest>| {
+            let js_inner = js_clone.clone();
+            let db_inner = scylla_clone.clone();
+            async move {
+                let msg_id = Uuid::new_v4();
+                let ts = chrono::Utc::now().timestamp_millis();
+                
+                // 1. Persist to Cassandra
+                db_inner.query(
+                    "INSERT INTO influx_ks.messages (channel_id, message_id, sender, content, timestamp) VALUES ('global', ?, ?, ?, ?)",
+                    (msg_id, payload.sender, payload.content, ts)
+                ).await.ok();
+
+                // 2. Publish to NATS
+                let nats_payload = serde_json::to_vec(&Message {
+                    id: msg_id,
+                    sender: "system".to_string(), // In real app, derived from auth
+                    content: "Message persisted and broadcast".to_string(),
+                    timestamp: ts,
+                }).unwrap();
+
+                match js_inner.publish("influx.events.global", nats_payload.into()).await {
+                    Ok(_) => "Sent".to_string(),
+                    Err(_) => "NATS Error".to_string()
+                }
+            }
+        }))
+        .route("/messages", get(move || {
+            let db_inner = scylla_session.clone();
+            async move {
+                let result = db_inner.query("SELECT message_id, sender, content, timestamp FROM influx_ks.messages WHERE channel_id = 'global' LIMIT 50", &[]).await;
+                match result {
+                    Ok(rows) => {
+                        let mut messages = Vec::new();
+                        if let Some(it) = rows.rows {
+                            for row in it {
+                                let (id, sender, content, timestamp): (Uuid, String, String, i64) = row.into_typed().unwrap();
+                                messages.push(Message { id, sender, content, timestamp });
+                            }
+                        }
+                        Json(messages)
+                    },
+                    Err(_) => Json(vec![])
+                }
+            }
         }))
 }
 
 pub async fn start_consumer(js: nats::jetstream::Context, stream_name: &str) {
     let stream = js.get_stream(stream_name).await.unwrap();
-    let consumer_config = nats::jetstream::consumer::pull::Config {
-        name: Some("my_consumer".to_string()),
-        deliver_policy: DeliverPolicy::All,
+    let consumer = stream.create_consumer(nats::jetstream::consumer::pull::Config {
+        name: Some("msg_store".to_string()),
         ..Default::default()
-    };
-    let consumer = stream.create_consumer(consumer_config).await.unwrap();
+    }).await.unwrap();
     tokio::spawn(async move {
         let mut messages = consumer.messages().await.unwrap();
         while let Some(Ok(msg)) = messages.next().await {
-            println!("Received message: {:?}", msg.payload);
-            msg.ack().await.unwrap();
+            msg.ack().await.ok();
         }
     });
 }
 
 #[tokio::main]
 async fn main() {
-    let stream_name = "influx_events";
-    let js = setup_nats(stream_name, "nats://nats:4222", "influx.events.>").await;
-    let scylla_session = setup_cassandra("cassandra:9042").await;
-    let app = create_router(js.clone(), scylla_session);
-
-    start_consumer(js, stream_name).await;
-
+    let js = setup_nats("influx_events", "nats://nats:4222", "influx.events.>").await;
+    let scylla = setup_cassandra("cassandra:9042").await;
+    let app = create_router(js, scylla);
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
-    println!("listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app.into_make_service()).await.unwrap();
 }
