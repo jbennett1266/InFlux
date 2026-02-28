@@ -94,9 +94,18 @@ pub fn create_router(js: nats::jetstream::Context, scylla_session: Arc<Session>)
     let scylla_session_clone = scylla_session.clone();
     Router::new()
         .route("/", get(handler))
-        .route("/publish", get(move || async move {
-            js_clone.publish("influx.events.test", "Hello from Axum!".into()).await.unwrap();
-            "Message published to NATS JetStream!".to_string()
+        .route("/publish", get(move || {
+            let js_inner = js_clone.clone();
+            async move {
+                let unique_subject = format!("influx.events.test.{}", uuid::Uuid::new_v4());
+                match js_inner.publish(unique_subject, "Hello from Axum!".into()).await {
+                    Ok(_) => "Message published to NATS JetStream!".to_string(),
+                    Err(e) => {
+                        println!("Failed to publish: {:?}", e);
+                        format!("Error: {:?}", e)
+                    }
+                }
+            }
         }))
         .route("/add_user", get(move || {
             let session_clone = scylla_session_clone.clone();
