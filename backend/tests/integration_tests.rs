@@ -40,3 +40,16 @@ async fn test_encrypt_message_route_integration() {
     assert!(text.contains("Encrypted:"));
     assert!(text.contains("Decrypted:"));
 }
+
+#[tokio::test]
+async fn test_generate_keys_integration() {
+    let server = create_test_server().await;
+    let response = server.get("/generate_keys").await;
+    
+    response.assert_status_ok();
+    let json: serde_json::Value = response.json();
+    assert!(json["public_key"].is_string());
+    assert!(json["private_key"].is_string());
+}
+
+

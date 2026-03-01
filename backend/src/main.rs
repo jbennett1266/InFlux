@@ -1,4 +1,4 @@
-use axum::{routing::get, Router};
+use axum::{routing::get, Router, Json};
 use std::net::SocketAddr;
 use async_nats as nats;
 use nats::jetstream::{self, stream::Config as StreamConfig, consumer::DeliverPolicy};
@@ -6,29 +6,67 @@ use scylla::{Session, SessionBuilder};
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
+use serde::{Serialize, Deserialize};
+use base64::{Engine as _, engine::general_purpose};
 
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use chacha20poly1305::aead::{Aead, KeyInit};
 use rand::RngCore;
 use rand::rngs::OsRng;
+use x25519_dalek::{StaticSecret, PublicKey};
 
-pub fn encrypt(plaintext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, String> {
-    let key = Key::from_slice(key);
-    let cipher = ChaCha20Poly1305::new(key);
-    let nonce = Nonce::from_slice(nonce); // 12-byte nonce
-
-    cipher.encrypt(nonce, plaintext)
-        .map_err(|e| format!("Encryption error: {:?}", e))
+#[derive(Serialize, Deserialize)]
+pub struct KeyPairResponse {
+    pub public_key: String,
+    pub private_key: String,
 }
 
-pub fn decrypt(ciphertext: &[u8], key: &[u8], nonce: &[u8]) -> Result<Vec<u8>, String> {
-    let key = Key::from_slice(key);
-    let cipher = ChaCha20Poly1305::new(key);
-    let nonce = Nonce::from_slice(nonce); // 12-byte nonce
-
-    cipher.decrypt(nonce, ciphertext)
-        .map_err(|e| format!("Decryption error: {:?}", e))
+#[derive(Deserialize)]
+pub struct EncryptRequest {
+    pub message: String,
+    pub recipient_public_key: String,
 }
+
+#[derive(Serialize)]
+pub struct EncryptResponse {
+    pub ciphertext: String,
+    pub ephemeral_public_key: String,
+    pub nonce: String,
+}
+
+#[derive(Deserialize)]
+pub struct DecryptRequest {
+    pub ciphertext: String,
+    pub ephemeral_public_key: String,
+    pub nonce: String,
+    pub recipient_private_key: String,
+}
+
+// --- E2EE Logic ---
+
+pub fn derive_shared_secret(my_private: &StaticSecret, their_public: &PublicKey) -> [u8; 32] {
+    let shared = my_private.diffie_hellman(their_public);
+    *shared.as_bytes()
+}
+
+pub fn symmetric_encrypt(plaintext: &[u8], key: &[u8; 32]) -> (Vec<u8>, [u8; 12]) {
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+    let mut nonce_bytes = [0u8; 12];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    
+    let ciphertext = cipher.encrypt(nonce, plaintext).expect("Encryption failed");
+    (ciphertext, nonce_bytes)
+}
+
+pub fn symmetric_decrypt(ciphertext: &[u8], key: &[u8; 32], nonce_bytes: &[u8; 12]) -> Result<Vec<u8>, String> {
+    let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
+    let nonce = Nonce::from_slice(nonce_bytes);
+    
+    cipher.decrypt(nonce, ciphertext).map_err(|e| format!("Decryption error: {:?}", e))
+}
+
+// --- Setup Functions ---
 
 pub async fn setup_nats(stream_name: &str, nats_url: &str, subject: &str) -> nats::jetstream::Context {
     let nc = nats::connect(nats_url).await.expect("Failed to connect to NATS");
@@ -69,29 +107,15 @@ pub async fn setup_cassandra(cassandra_url: &str) -> Arc<Session> {
     };
 
     let scylla_session = Arc::new(session);
-
-    scylla_session
-        .query(
-            "CREATE KEYSPACE IF NOT EXISTS influx_ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}",
-            &[],
-        )
-        .await
-        .expect("Failed to create keyspace");
-    
-    scylla_session
-        .query(
-            "CREATE TABLE IF NOT EXISTS influx_ks.users (id UUID PRIMARY KEY, username TEXT, email TEXT)",
-            &[],
-        )
-        .await
-        .expect("Failed to create table");
-
+    scylla_session.query("CREATE KEYSPACE IF NOT EXISTS influx_ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}", &[]).await.ok();
+    scylla_session.query("CREATE TABLE IF NOT EXISTS influx_ks.users (id UUID PRIMARY KEY, username TEXT, email TEXT)", &[]).await.ok();
     scylla_session
 }
 
 pub fn create_router(js: nats::jetstream::Context, scylla_session: Arc<Session>) -> Router {
     let js_clone = js.clone();
     let scylla_session_clone = scylla_session.clone();
+    
     Router::new()
         .route("/", get(handler))
         .route("/publish", get(move || {
@@ -100,10 +124,7 @@ pub fn create_router(js: nats::jetstream::Context, scylla_session: Arc<Session>)
                 let unique_subject = format!("influx.events.test.{}", uuid::Uuid::new_v4());
                 match js_inner.publish(unique_subject, "Hello from Axum!".into()).await {
                     Ok(_) => "Message published to NATS JetStream!".to_string(),
-                    Err(e) => {
-                        println!("Failed to publish: {:?}", e);
-                        format!("Error: {:?}", e)
-                    }
+                    Err(e) => format!("Error: {:?}", e)
                 }
             }
         }))
@@ -113,30 +134,20 @@ pub fn create_router(js: nats::jetstream::Context, scylla_session: Arc<Session>)
                 let id = uuid::Uuid::new_v4();
                 let username = "test_user";
                 let email = "test@example.com";
-                match session_clone.query(
-                    "INSERT INTO influx_ks.users (id, username, email) VALUES (?, ?, ?)",
-                    (id, username, email),
-                ).await {
+                match session_clone.query("INSERT INTO influx_ks.users (id, username, email) VALUES (?, ?, ?)", (id, username, email)).await {
                     Ok(_) => format!("User {} added to Cassandra!", username),
-                    Err(e) => {
-                        println!("Failed to insert user: {:?}", e);
-                        format!("Error: {:?}", e)
-                    }
+                    Err(e) => format!("Error: {:?}", e)
                 }
             }
         }))
-        .route("/encrypt_message", get(|| async {
-            let plaintext = b"This is a secret message.";
-            let mut key_bytes = [0u8; 32];
-            let mut csprng = OsRng;
-            csprng.fill_bytes(&mut key_bytes);
-            let mut nonce_bytes = [0u8; 12];
-            csprng.fill_bytes(&mut nonce_bytes);
-
-            let encrypted = encrypt(plaintext, &key_bytes, &nonce_bytes).unwrap();
-            let decrypted = decrypt(&encrypted, &key_bytes, &nonce_bytes).unwrap();
-
-            format!("Original: {:?}\nEncrypted: {:?}\nDecrypted: {:?}", plaintext, encrypted, decrypted)
+        .route("/generate_keys", get(|| async {
+            let alice_secret = StaticSecret::random_from_rng(OsRng);
+            let alice_public = PublicKey::from(&alice_secret);
+            
+            Json(KeyPairResponse {
+                public_key: general_purpose::STANDARD.encode(alice_public.as_bytes()),
+                private_key: general_purpose::STANDARD.encode(alice_secret.to_bytes()),
+            })
         }))
 }
 
@@ -169,8 +180,7 @@ async fn main() {
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     println!("listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app.into_make_service()).await
-        .unwrap();
+    axum::serve(listener, app.into_make_service()).await.unwrap();
 }
 
 pub async fn handler() -> String {
