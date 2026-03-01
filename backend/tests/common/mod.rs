@@ -18,13 +18,15 @@ pub async fn get_resources() -> &'static SharedResources {
         let nats_url = "nats://localhost:4222";
         let cassandra_url = "localhost:9042";
 
-        // 1. Wait for Cassandra
         wait_for_cassandra(cassandra_url).await;
 
-        // 2. Initialize Shared Resources
-        let stream_name = "shared_test_stream";
-        let nats = setup_nats(stream_name, nats_url, "shared.test.>").await;
+        let stream_name = "shared_test_stream_auth";
+        let nats = setup_nats(stream_name, nats_url, "shared.auth.test.>").await;
         let session = setup_cassandra(cassandra_url).await;
+
+        // Ensure fresh schema for auth tests
+        session.query("DROP TABLE IF EXISTS influx_ks.users", &[]).await.ok();
+        session.query("CREATE TABLE IF NOT EXISTS influx_ks.users (username TEXT PRIMARY KEY, password_hash TEXT, public_key TEXT)", &[]).await.ok();
 
         SharedResources {
             nats,
