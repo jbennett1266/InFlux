@@ -184,10 +184,19 @@ pub fn create_router(js: nats::jetstream::Context, scylla_session: Arc<Session>)
             async move {
                 let thread_id = Uuid::new_v4().to_string();
                 let _ = db_inner.query("INSERT INTO influx_ks.threads (id, name, is_group) VALUES (?, ?, ?)", (&thread_id, &payload.name, payload.is_group)).await;
-                let mut members = payload.members;
-                if !members.contains(&user.username) { members.push(user.username.clone()); }
-                for member in members {
-                    let _ = db_inner.query("INSERT INTO influx_ks.user_threads (username, thread_id, thread_name, is_group) VALUES (?, ?, ?, ?)", (member, &thread_id, &payload.name, payload.is_group)).await;
+                
+                if !payload.is_group && payload.members.len() == 1 {
+                    let recipient = &payload.members[0];
+                    // Creator sees recipient's name
+                    let _ = db_inner.query("INSERT INTO influx_ks.user_threads (username, thread_id, thread_name, is_group) VALUES (?, ?, ?, ?)", (&user.username, &thread_id, recipient, false)).await;
+                    // Recipient sees creator's name
+                    let _ = db_inner.query("INSERT INTO influx_ks.user_threads (username, thread_id, thread_name, is_group) VALUES (?, ?, ?, ?)", (recipient, &thread_id, &user.username, false)).await;
+                } else {
+                    let mut members = payload.members;
+                    if !members.contains(&user.username) { members.push(user.username.clone()); }
+                    for member in members {
+                        let _ = db_inner.query("INSERT INTO influx_ks.user_threads (username, thread_id, thread_name, is_group) VALUES (?, ?, ?, ?)", (member, &thread_id, &payload.name, payload.is_group)).await;
+                    }
                 }
                 Json(serde_json::json!({ "id": thread_id })).into_response()
             }

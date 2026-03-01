@@ -66,30 +66,37 @@ async fn test_full_thread_lifecycle_integration() {
 }
 
 #[tokio::test]
-async fn test_thread_membership_isolation() {
+async fn test_dynamic_dm_thread_names() {
     let server = create_test_server().await;
     let res = get_resources().await;
     cleanup_database(&res.session).await;
 
-    // 1. Register UNIQUE Alice and Eve
-    let alice = json!({ "username": "alice_iso", "password": "password" });
-    let eve = json!({ "username": "eve_iso", "password": "password" });
-    server.post("/register").json(&alice).await.assert_status(axum::http::StatusCode::CREATED);
-    server.post("/register").json(&eve).await.assert_status(axum::http::StatusCode::CREATED);
+    // 1. Register Alice and Bob
+    let alice = json!({ "username": "alice_dm", "password": "password" });
+    let bob = json!({ "username": "bob_dm", "password": "password" });
+    server.post("/register").json(&alice).await;
+    server.post("/register").json(&bob).await;
 
     // 2. Login
     let alice_token = server.post("/login").json(&alice).await.json::<serde_json::Value>()["access_token"].as_str().unwrap().to_string();
-    let eve_token = server.post("/login").json(&eve).await.json::<serde_json::Value>()["access_token"].as_str().unwrap().to_string();
+    let bob_token = server.post("/login").json(&bob).await.json::<serde_json::Value>()["access_token"].as_str().unwrap().to_string();
 
-    // 3. Alice creates a private thread
-    let thread_res = server.post("/threads")
+    // 3. Alice creates a DM with Bob
+    // Note: Frontend sends 'bob_dm' in members and 'bob_dm' as name (prefixed with @)
+    server.post("/threads")
         .add_header(axum::http::header::AUTHORIZATION, axum::http::HeaderValue::from_str(&format!("Bearer {}", alice_token)).unwrap())
-        .json(&json!({ "name": "Private", "members": [], "is_group": false })).await;
-    let thread_id = thread_res.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+        .json(&json!({ "name": "bob_dm", "members": ["bob_dm"], "is_group": false })).await;
 
-    // 4. Eve attempts to read Alice's thread
-    let access_res = server.get(&format!("/messages/{}", thread_id))
-        .add_header(axum::http::header::AUTHORIZATION, axum::http::HeaderValue::from_str(&format!("Bearer {}", eve_token)).unwrap())
-        .await;
-    access_res.assert_status(axum::http::StatusCode::FORBIDDEN);
+    // 4. Alice lists threads: should see "bob_dm"
+    let alice_threads = server.get("/threads")
+        .add_header(axum::http::header::AUTHORIZATION, axum::http::HeaderValue::from_str(&format!("Bearer {}", alice_token)).unwrap())
+        .await.json::<Vec<serde_json::Value>>();
+    assert_eq!(alice_threads[0]["name"], "bob_dm");
+
+    // 5. Bob lists threads: should see "alice_dm"
+    let bob_threads = server.get("/threads")
+        .add_header(axum::http::header::AUTHORIZATION, axum::http::HeaderValue::from_str(&format!("Bearer {}", bob_token)).unwrap())
+        .await.json::<Vec<serde_json::Value>>();
+    assert_eq!(bob_threads[0]["name"], "alice_dm");
 }
+

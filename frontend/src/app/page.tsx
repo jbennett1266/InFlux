@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Lock, Shield, Send, UserPlus, Key, LogIn, History, LogOut, MessageSquare, Plus, Users, Hash } from "lucide-react";
+import { Lock, Shield, Send, UserPlus, Key, LogIn, History, LogOut, MessageSquare, Plus, Users, Hash, X } from "lucide-react";
 import api from "@/lib/api";
 
 export default function Home() {
@@ -16,9 +16,17 @@ export default function Home() {
   const [messages, setMessages] = useState<any[]>([]);
   const [keys, setKeys] = useState<{ public_key: string; private_key: string } | null>(null);
 
+  // UI States
+  const [showThreadModal, setShowThreadModal] = useState(false);
+  const [modalIsGroup, setModalIsGroup] = useState(false);
+  const [newThreadName, setNewThreadName] = useState("");
+  const [newThreadMembers, setNewThreadMembers] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const [messageInput, setMessageInput] = useState("");
+
   useEffect(() => {
-    const token = localStorage.getItem("access_token");
-    const storedUser = localStorage.getItem("username");
+    const token = typeof window !== 'undefined' ? localStorage.getItem("access_token") : null;
+    const storedUser = typeof window !== 'undefined' ? localStorage.getItem("username") : null;
     if (token && storedUser) {
       setUsername(storedUser);
       setView("dashboard");
@@ -66,25 +74,38 @@ export default function Home() {
     } catch (e) {}
   };
 
-  const createThread = async (isGroup: boolean) => {
-    const name = prompt(isGroup ? "Group Name:" : "Recipient Username:");
-    if (!name) return;
+  const handleCreateThread = async () => {
+    if (!newThreadName) return;
     
     try {
+      const members = newThreadMembers.split(',').map(m => m.trim()).filter(m => m !== "");
       await api.post("/threads", {
-        name: isGroup ? name : `@${name}`,
-        members: [name],
-        is_group: isGroup
+        name: modalIsGroup ? newThreadName : `@${newThreadName}`,
+        members: modalIsGroup ? members : [newThreadName],
+        is_group: modalIsGroup
       });
+      setShowThreadModal(false);
+      setNewThreadName("");
+      setNewThreadMembers("");
       fetchThreads();
     } catch (e) {}
   };
 
-  const sendMessage = async (content: string) => {
+  const sendMessage = async () => {
+    if (!messageInput.trim() || isSending) return;
+    
+    setIsSending(true);
+    const content = messageInput;
+    setMessageInput(""); // Optimistic clear
+
     try {
       await api.post(`/publish/${activeThread.id}`, { content });
-      fetchMessages(activeThread.id);
-    } catch (e) {}
+      await fetchMessages(activeThread.id);
+    } catch (e) {
+      setMessageInput(content); // Revert on failure
+    } finally {
+      setIsSending(false);
+    }
   };
 
   const handleLogout = () => {
@@ -140,6 +161,50 @@ export default function Home() {
 
   return (
     <div className="flex h-screen bg-slate-950 text-slate-50 overflow-hidden font-sans">
+      {/* Thread Creation Modal */}
+      {showThreadModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
+            <div className="p-6 border-b border-slate-800 flex items-center justify-between">
+              <h3 className="text-xl font-bold">{modalIsGroup ? "Create New Group" : "Direct Message"}</h3>
+              <button onClick={() => setShowThreadModal(false)} className="text-slate-500 hover:text-white transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">{modalIsGroup ? "Group Name" : "Recipient Username"}</label>
+                <input 
+                  autoFocus
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:ring-1 focus:ring-indigo-500 outline-none"
+                  placeholder={modalIsGroup ? "Team Alpha" : "alice_crypto"}
+                  value={newThreadName}
+                  onChange={e => setNewThreadName(e.target.value)}
+                />
+              </div>
+              {modalIsGroup && (
+                <div className="space-y-1">
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Members (comma separated)</label>
+                  <input 
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm focus:ring-1 focus:ring-indigo-500 outline-none"
+                    placeholder="bob, charlie, dave"
+                    value={newThreadMembers}
+                    onChange={e => setNewThreadMembers(e.target.value)}
+                  />
+                </div>
+              )}
+              <button 
+                onClick={handleCreateThread}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 py-3 rounded-xl font-bold flex items-center justify-center space-x-2 transition-all active:scale-[0.98]"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Initialize {modalIsGroup ? "Group" : "Thread"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Sidebar */}
       <aside className="w-64 border-r border-slate-800 bg-slate-900 flex flex-col">
         <div className="p-6 border-b border-slate-800 flex items-center space-x-3">
@@ -162,7 +227,7 @@ export default function Home() {
           <div>
             <div className="flex items-center justify-between mb-4 px-2">
                 <h3 className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Secure Threads</h3>
-                <button onClick={() => createThread(false)} className="text-indigo-400 hover:text-indigo-300 transition-colors"><Plus className="w-4 h-4" /></button>
+                <button onClick={() => { setModalIsGroup(false); setShowThreadModal(true); }} className="text-indigo-400 hover:text-indigo-300 transition-colors"><Plus className="w-4 h-4" /></button>
             </div>
             <div className="space-y-1">
                 {threads.filter(t => !t.is_group).map(t => (
@@ -181,7 +246,7 @@ export default function Home() {
           <div>
             <div className="flex items-center justify-between mb-4 px-2">
                 <h3 className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Encrypted Groups</h3>
-                <button onClick={() => createThread(true)} className="text-indigo-400 hover:text-indigo-300 transition-colors"><Plus className="w-4 h-4" /></button>
+                <button onClick={() => { setModalIsGroup(true); setShowThreadModal(true); }} className="text-indigo-400 hover:text-indigo-300 transition-colors"><Plus className="w-4 h-4" /></button>
             </div>
             <div className="space-y-1">
                 {threads.filter(t => t.is_group).map(t => (
@@ -252,19 +317,22 @@ export default function Home() {
                 <input 
                     type="text" 
                     placeholder={`Message ${activeThread.name}...`}
-                    className="flex-grow bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition-all shadow-inner"
+                    className="flex-grow bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition-all shadow-inner disabled:opacity-50"
+                    value={messageInput}
+                    disabled={isSending}
+                    onChange={e => setMessageInput(e.target.value)}
                     onKeyDown={(e) => {
                         if (e.key === 'Enter') {
-                            const input = e.target as HTMLInputElement;
-                            if (input.value.trim()) {
-                                sendMessage(input.value);
-                                input.value = "";
-                            }
+                            sendMessage();
                         }
                     }}
                 />
-                <button className="bg-indigo-600 p-3 rounded-xl hover:bg-indigo-500 transition-all active:scale-95 shadow-lg shadow-indigo-500/20">
-                    <Send className="w-5 h-5" />
+                <button 
+                  onClick={sendMessage}
+                  disabled={isSending || !messageInput.trim()}
+                  className="bg-indigo-600 p-3 rounded-xl hover:bg-indigo-500 transition-all active:scale-95 shadow-lg shadow-indigo-500/20 disabled:bg-slate-800 disabled:opacity-50"
+                >
+                    <Send className={`w-5 h-5 ${isSending ? 'animate-pulse' : ''}`} />
                 </button>
             </div>
         </footer>
