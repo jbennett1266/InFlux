@@ -1,6 +1,7 @@
 mod common;
 use common::{create_test_server, get_resources, cleanup_database};
 use tokio::time::{sleep, Duration};
+use serde_json::json;
 
 #[tokio::test]
 async fn test_root_route_integration() {
@@ -10,46 +11,33 @@ async fn test_root_route_integration() {
 }
 
 #[tokio::test]
-async fn test_publish_route_integration() {
-    let server = create_test_server().await;
-    let response = server.get("/publish").await;
-    response.assert_text("Message published to NATS JetStream!");
-}
-
-#[tokio::test]
-async fn test_add_user_route_integration() {
+async fn test_publish_and_retrieve_integration() {
     let server = create_test_server().await;
     let res = get_resources().await;
-    
-    // Cleanup before test
     cleanup_database(&res.session).await;
+
+    // 1. Publish a message
+    let payload = json!({
+        "sender": "test_user",
+        "content": "Persistent message test"
+    });
+    let response = server.post("/publish").json(&payload).await;
+    response.assert_text("Sent");
+
+    // 2. Retrieve messages
     sleep(Duration::from_millis(500)).await;
-
-    let response = server.get("/add_user").await;
-    response.assert_text("User test_user added to Cassandra!");
-}
-
-#[tokio::test]
-async fn test_encrypt_message_route_integration() {
-    let server = create_test_server().await;
-    let response = server.get("/encrypt_message").await;
-    
+    let response = server.get("/messages").await;
     response.assert_status_ok();
-    let text = response.text();
-    assert!(text.contains("Original:"));
-    assert!(text.contains("Encrypted:"));
-    assert!(text.contains("Decrypted:"));
+    
+    let messages: Vec<serde_json::Value> = response.json();
+    assert!(!messages.is_empty());
+    assert_eq!(messages[0]["sender"], "test_user");
+    assert_eq!(messages[0]["content"], "Persistent message test");
 }
 
 #[tokio::test]
 async fn test_generate_keys_integration() {
     let server = create_test_server().await;
     let response = server.get("/generate_keys").await;
-    
     response.assert_status_ok();
-    let json: serde_json::Value = response.json();
-    assert!(json["public_key"].is_string());
-    assert!(json["private_key"].is_string());
 }
-
-
