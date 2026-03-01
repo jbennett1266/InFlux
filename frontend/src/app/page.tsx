@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Lock, Shield, Send, UserPlus, Key, LogIn, History, LogOut } from "lucide-react";
+import { Lock, Shield, Send, UserPlus, Key, LogIn, History, LogOut, MessageSquare, Plus, Users, Hash } from "lucide-react";
 import api from "@/lib/api";
 
 export default function Home() {
@@ -10,15 +10,26 @@ export default function Home() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [status, setStatus] = useState("Idle");
-  const [keys, setKeys] = useState<{ public_key: string; private_key: string } | null>(null);
+  
+  const [threads, setThreads] = useState<any[]>([]);
+  const [activeThread, setActiveThread] = useState<any>({ id: "global", name: "Global Channel", is_group: true });
   const [messages, setMessages] = useState<any[]>([]);
+  const [keys, setKeys] = useState<{ public_key: string; private_key: string } | null>(null);
 
   useEffect(() => {
-    if (localStorage.getItem("access_token")) {
+    const token = localStorage.getItem("access_token");
+    const storedUser = localStorage.getItem("username");
+    if (token && storedUser) {
+      setUsername(storedUser);
       setView("dashboard");
-      fetchMessages();
+      loadDashboardData(storedUser);
     }
   }, []);
+
+  const loadDashboardData = async (user: string) => {
+    fetchThreads();
+    fetchMessages("global");
+  };
 
   const handleAuth = async () => {
     setStatus("Authenticating...");
@@ -31,8 +42,9 @@ export default function Home() {
         const res = await api.post("/login", { username, password });
         localStorage.setItem("access_token", res.data.access_token);
         localStorage.setItem("refresh_token", res.data.refresh_token);
+        localStorage.setItem("username", username);
         setView("dashboard");
-        fetchMessages();
+        loadDashboardData(username);
         setStatus("Logged In");
       }
     } catch (e: any) {
@@ -40,27 +52,43 @@ export default function Home() {
     }
   };
 
-  const fetchMessages = async () => {
+  const fetchThreads = async () => {
     try {
-      const res = await api.get("/messages");
+      const res = await api.get(`/threads`);
+      setThreads(res.data);
+    } catch (e) {}
+  };
+
+  const fetchMessages = async (channelId: string) => {
+    try {
+      const res = await api.get(`/messages/${channelId}`);
       setMessages(res.data);
     } catch (e) {}
   };
 
-  const generateKeys = async () => {
-    setStatus("Generating Keys...");
+  const createThread = async (isGroup: boolean) => {
+    const name = prompt(isGroup ? "Group Name:" : "Recipient Username:");
+    if (!name) return;
+    
     try {
-      const res = await api.get("/generate_keys");
-      setKeys(res.data);
-      setStatus("Keys Generated (Local)");
-    } catch (e) {
-      setStatus("Error fetching keys");
-    }
+      await api.post("/threads", {
+        name: isGroup ? name : `@${name}`,
+        members: [name],
+        is_group: isGroup
+      });
+      fetchThreads();
+    } catch (e) {}
+  };
+
+  const sendMessage = async (content: string) => {
+    try {
+      await api.post(`/publish/${activeThread.id}`, { content });
+      fetchMessages(activeThread.id);
+    } catch (e) {}
   };
 
   const handleLogout = () => {
-    localStorage.removeItem("access_token");
-    localStorage.removeItem("refresh_token");
+    localStorage.clear();
     setView("auth");
   };
 
@@ -111,97 +139,136 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen p-8 max-w-6xl mx-auto space-y-12 bg-slate-950 text-slate-50">
-      <header className="flex items-center justify-between border-b border-slate-800 pb-6">
-        <div className="flex items-center space-x-3">
-          <Shield className="w-8 h-8 text-indigo-500" />
-          <h1 className="text-2xl font-bold tracking-tight">InFlux</h1>
+    <div className="flex h-screen bg-slate-950 text-slate-50 overflow-hidden font-sans">
+      {/* Sidebar */}
+      <aside className="w-64 border-r border-slate-800 bg-slate-900 flex flex-col">
+        <div className="p-6 border-b border-slate-800 flex items-center space-x-3">
+          <Shield className="w-6 h-6 text-indigo-500" />
+          <span className="font-bold tracking-tight text-lg">InFlux</span>
         </div>
-        <div className="flex items-center space-x-4">
-            <span className="text-xs font-mono text-slate-400">@{username}</span>
-            <button onClick={handleLogout} className="p-2 hover:bg-slate-900 rounded-lg text-rose-400 transition-colors">
-                <LogOut className="w-4 h-4" />
-            </button>
-        </div>
-      </header>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Identity & Keys */}
-        <section className="space-y-6">
-          <div className="p-6 bg-slate-900 rounded-xl border border-slate-800 space-y-4">
-            <h2 className="text-lg font-semibold flex items-center space-x-2">
-              <Key className="w-5 h-5 text-indigo-400" />
-              <span>Identity Profile</span>
-            </h2>
+        
+        <nav className="flex-grow overflow-y-auto p-4 space-y-8">
+          <div>
+            <h3 className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-4 px-2">Public</h3>
             <button 
-              onClick={generateKeys}
-              className="w-full bg-indigo-600 hover:bg-indigo-500 transition-colors py-2 rounded-lg font-medium text-sm flex items-center justify-center space-x-2"
+                onClick={() => { setActiveThread({ id: "global", name: "Global Channel" }); fetchMessages("global"); }}
+                className={`w-full flex items-center space-x-3 px-2 py-2 rounded-lg transition-colors ${activeThread.id === 'global' ? 'bg-indigo-600 text-white' : 'hover:bg-slate-800 text-slate-400'}`}
             >
-              <Key className="w-4 h-4" />
-              <span>Generate New Keys</span>
+              <Hash className="w-4 h-4" />
+              <span className="text-sm font-medium">global</span>
             </button>
-
-            {keys && (
-              <div className="pt-4 space-y-3 font-mono text-[10px]">
-                <div className="p-2 bg-slate-950 rounded border border-slate-800">
-                    <p className="text-indigo-400 mb-1">Public Key</p>
-                    <p className="break-all text-slate-500">{keys.public_key}</p>
-                </div>
-              </div>
-            )}
           </div>
-        </section>
 
-        {/* Message Feed */}
-        <section className="lg:col-span-2 space-y-6">
-           <div className="p-6 bg-slate-900 rounded-xl border border-slate-800 flex flex-col h-[500px]">
-            <h2 className="text-lg font-semibold border-b border-slate-800 pb-4 mb-4 flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                    <History className="w-5 h-5 text-indigo-400" />
-                    <span>Secure Channel: #global</span>
-                </div>
-                <button onClick={fetchMessages} className="text-xs text-indigo-500 hover:underline">Refresh</button>
-            </h2>
-            
-            <div className="flex-grow overflow-y-auto space-y-4 pr-2 custom-scrollbar">
-                {messages.length === 0 ? (
-                    <div className="h-full flex items-center justify-center text-slate-600 text-sm italic">
-                        No messages in history
-                    </div>
-                ) : (
-                    messages.map((m) => (
-                        <div key={m.id} className="p-3 bg-slate-950 rounded-lg border border-slate-800 space-y-1">
-                            <div className="flex items-center justify-between text-[10px] text-slate-500">
-                                <span className="font-bold text-indigo-500">@{m.sender}</span>
-                                <span>{new Date(m.timestamp).toLocaleTimeString()}</span>
-                            </div>
-                            <p className="text-sm text-slate-300 break-words">{m.content}</p>
-                        </div>
-                    ))
-                )}
+          <div>
+            <div className="flex items-center justify-between mb-4 px-2">
+                <h3 className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Secure Threads</h3>
+                <button onClick={() => createThread(false)} className="text-indigo-400 hover:text-indigo-300 transition-colors"><Plus className="w-4 h-4" /></button>
             </div>
+            <div className="space-y-1">
+                {threads.filter(t => !t.is_group).map(t => (
+                    <button 
+                        key={t.id}
+                        onClick={() => { setActiveThread(t); fetchMessages(t.id); }}
+                        className={`w-full flex items-center space-x-3 px-2 py-2 rounded-lg transition-colors ${activeThread.id === t.id ? 'bg-slate-800 text-white border border-slate-700' : 'hover:bg-slate-800/50 text-slate-400'}`}
+                    >
+                        <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                        <span className="text-sm truncate">{t.name}</span>
+                    </button>
+                ))}
+            </div>
+          </div>
 
-            <div className="mt-6 flex space-x-2">
+          <div>
+            <div className="flex items-center justify-between mb-4 px-2">
+                <h3 className="text-[10px] uppercase tracking-widest text-slate-500 font-bold">Encrypted Groups</h3>
+                <button onClick={() => createThread(true)} className="text-indigo-400 hover:text-indigo-300 transition-colors"><Plus className="w-4 h-4" /></button>
+            </div>
+            <div className="space-y-1">
+                {threads.filter(t => t.is_group).map(t => (
+                    <button 
+                        key={t.id}
+                        onClick={() => { setActiveThread(t); fetchMessages(t.id); }}
+                        className={`w-full flex items-center space-x-3 px-2 py-2 rounded-lg transition-colors ${activeThread.id === t.id ? 'bg-indigo-600 text-white' : 'hover:bg-slate-800 text-slate-400'}`}
+                    >
+                        <Users className="w-4 h-4" />
+                        <span className="text-sm truncate">{t.name}</span>
+                    </button>
+                ))}
+            </div>
+          </div>
+        </nav>
+
+        <div className="p-4 border-t border-slate-800 bg-slate-950/50">
+            <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                    <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center font-bold text-xs uppercase">
+                        {username.slice(0, 2)}
+                    </div>
+                    <span className="text-xs font-mono text-slate-400">@{username}</span>
+                </div>
+                <button onClick={handleLogout} className="p-2 hover:bg-slate-800 rounded-lg text-rose-400 transition-colors">
+                    <LogOut className="w-4 h-4" />
+                </button>
+            </div>
+        </div>
+      </aside>
+
+      {/* Main Chat Area */}
+      <main className="flex-grow flex flex-col">
+        <header className="h-16 border-b border-slate-800 flex items-center justify-between px-8 bg-slate-950">
+            <div className="flex items-center space-x-3">
+                <MessageSquare className="w-5 h-5 text-indigo-400" />
+                <h2 className="font-bold text-lg">{activeThread.name}</h2>
+            </div>
+            <div className="flex items-center space-x-2 bg-slate-900 px-3 py-1 rounded-full text-[10px] font-mono text-slate-400 border border-slate-800">
+                <Lock className="w-3 h-3 text-emerald-500" />
+                <span>End-to-End Encrypted</span>
+            </div>
+        </header>
+
+        <div className="flex-grow overflow-y-auto p-8 space-y-6 custom-scrollbar bg-[url('/grid.svg')] bg-center [mask-image:linear-gradient(180deg,white,rgba(255,255,255,0))]">
+            {messages.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center space-y-4 opacity-20">
+                    <Shield className="w-16 h-16" />
+                    <p className="text-sm font-medium tracking-widest uppercase">Start of secure history</p>
+                </div>
+            ) : (
+                messages.map((m) => (
+                    <div key={m.id} className={`flex flex-col ${m.sender === username ? 'items-end' : 'items-start'}`}>
+                        <div className={`max-w-md p-4 rounded-2xl border ${m.sender === username ? 'bg-indigo-600 border-indigo-500' : 'bg-slate-900 border-slate-800'}`}>
+                            <div className="flex items-center justify-between mb-1 space-x-8">
+                                <span className="text-[10px] font-bold opacity-50 uppercase tracking-tighter">@{m.sender}</span>
+                                <span className="text-[10px] opacity-30 italic">{new Date(m.timestamp).toLocaleTimeString()}</span>
+                            </div>
+                            <p className="text-sm leading-relaxed">{m.content}</p>
+                        </div>
+                    </div>
+                ))
+            )}
+        </div>
+
+        <footer className="p-6 bg-slate-950 border-t border-slate-800">
+            <div className="max-w-4xl mx-auto flex space-x-3">
                 <input 
                     type="text" 
-                    placeholder="Type a secure message..."
-                    className="flex-grow bg-slate-950 border border-slate-800 rounded-lg px-4 py-2 text-sm outline-none focus:ring-1 focus:ring-indigo-500"
+                    placeholder={`Message ${activeThread.name}...`}
+                    className="flex-grow bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-1 focus:ring-indigo-500 transition-all shadow-inner"
                     onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                             const input = e.target as HTMLInputElement;
-                            api.post("/publish", { content: input.value });
-                            input.value = "";
-                            setTimeout(fetchMessages, 500);
+                            if (input.value.trim()) {
+                                sendMessage(input.value);
+                                input.value = "";
+                            }
                         }
                     }}
                 />
-                <button className="bg-indigo-600 p-2 rounded-lg hover:bg-indigo-500 transition-colors">
+                <button className="bg-indigo-600 p-3 rounded-xl hover:bg-indigo-500 transition-all active:scale-95 shadow-lg shadow-indigo-500/20">
                     <Send className="w-5 h-5" />
                 </button>
             </div>
-          </div>
-        </section>
-      </div>
-    </main>
+        </footer>
+      </main>
+    </div>
   );
 }

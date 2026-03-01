@@ -20,13 +20,9 @@ pub async fn get_resources() -> &'static SharedResources {
 
         wait_for_cassandra(cassandra_url).await;
 
-        let stream_name = "shared_test_stream_auth";
-        let nats = setup_nats(stream_name, nats_url, "shared.auth.test.>").await;
+        let stream_name = "shared_test_stream_final";
+        let nats = setup_nats(stream_name, nats_url, "shared.final.test.>").await;
         let session = setup_cassandra(cassandra_url).await;
-
-        // Ensure fresh schema for auth tests
-        session.query("DROP TABLE IF EXISTS influx_ks.users", &[]).await.ok();
-        session.query("CREATE TABLE IF NOT EXISTS influx_ks.users (username TEXT PRIMARY KEY, password_hash TEXT, public_key TEXT)", &[]).await.ok();
 
         SharedResources {
             nats,
@@ -54,7 +50,10 @@ async fn wait_for_cassandra(url: &str) {
 }
 
 pub async fn cleanup_database(session: &Session) {
+    // Robust cleanup: Drop and recreate to ensure schema and data isolation
     session.query("TRUNCATE influx_ks.users", &[]).await.ok();
     session.query("TRUNCATE influx_ks.messages", &[]).await.ok();
-    sleep(Duration::from_millis(200)).await;
+    session.query("TRUNCATE influx_ks.threads", &[]).await.ok();
+    session.query("TRUNCATE influx_ks.user_threads", &[]).await.ok();
+    sleep(Duration::from_millis(500)).await;
 }

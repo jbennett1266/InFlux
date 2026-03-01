@@ -1,13 +1,13 @@
 use axum::{
     routing::{get, post},
-    Router, Json, extract::{Request},
+    Router, Json, extract::{Request, Query, Path, Extension},
     http::{StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
 use std::net::SocketAddr;
 use async_nats as nats;
-use nats::jetstream::{self, stream::Config as StreamConfig, consumer::DeliverPolicy};
+use nats::jetstream::{self, stream::Config as StreamConfig};
 use scylla::{Session, SessionBuilder};
 use futures::StreamExt;
 use std::sync::Arc;
@@ -16,8 +16,8 @@ use serde::{Serialize, Deserialize};
 use base64::{Engine as _, engine::general_purpose};
 use jsonwebtoken::{encode, Header, Algorithm, Validation, EncodingKey, DecodingKey, decode};
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2,
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, SaltString},
+    Argon2, PasswordVerifier,
 };
 use tower_http::cors::{Any, CorsLayer};
 
@@ -65,23 +65,36 @@ pub struct RefreshRequest {
     pub refresh_token: String,
 }
 
-pub fn create_jwt(username: &str, expiration_seconds: i64) -> String {
-    let expiration = chrono::Utc::now()
-        .checked_add_signed(chrono::Duration::seconds(expiration_seconds))
-        .expect("valid timestamp")
-        .timestamp() as usize;
-
-    let claims = Claims { sub: username.to_owned(), exp: expiration };
-    encode(&Header::default(), &claims, &EncodingKey::from_secret(JWT_SECRET)).unwrap()
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Thread {
+    pub id: String,
+    pub name: String,
+    pub is_group: bool,
 }
 
-pub async fn auth_middleware(req: Request, next: Next) -> Result<Response, StatusCode> {
+#[derive(Deserialize)]
+pub struct CreateThreadRequest {
+    pub name: String,
+    pub members: Vec<String>,
+    pub is_group: bool,
+}
+
+#[derive(Clone)]
+pub struct CurrentUser {
+    pub username: String,
+}
+
+pub async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, StatusCode> {
     let auth_header = req.headers().get(header::AUTHORIZATION).and_then(|h| h.to_str().ok());
     if let Some(auth_header) = auth_header {
         if auth_header.starts_with("Bearer ") {
             let token = &auth_header[7..];
-            if decode::<Claims>(token, &DecodingKey::from_secret(JWT_SECRET), &Validation::new(Algorithm::HS256)).is_ok() {
-                return Ok(next.run(req).await);
+            match decode::<Claims>(token, &DecodingKey::from_secret(JWT_SECRET), &Validation::new(Algorithm::HS256)) {
+                Ok(data) => {
+                    req.extensions_mut().insert(CurrentUser { username: data.claims.sub });
+                    return Ok(next.run(req).await);
+                },
+                Err(_) => return Err(StatusCode::UNAUTHORIZED),
             }
         }
     }
@@ -117,6 +130,8 @@ pub async fn setup_cassandra(cassandra_url: &str) -> Arc<Session> {
     scylla_session.query("CREATE KEYSPACE IF NOT EXISTS influx_ks WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}", &[]).await.ok();
     scylla_session.query("CREATE TABLE IF NOT EXISTS influx_ks.users (username TEXT PRIMARY KEY, password_hash TEXT, public_key TEXT)", &[]).await.ok();
     scylla_session.query("CREATE TABLE IF NOT EXISTS influx_ks.messages (channel_id TEXT, message_id UUID, sender TEXT, content TEXT, timestamp BIGINT, PRIMARY KEY (channel_id, timestamp)) WITH CLUSTERING ORDER BY (timestamp DESC)", &[]).await.ok();
+    scylla_session.query("CREATE TABLE IF NOT EXISTS influx_ks.threads (id TEXT PRIMARY KEY, name TEXT, is_group BOOLEAN)", &[]).await.ok();
+    scylla_session.query("CREATE TABLE IF NOT EXISTS influx_ks.user_threads (username TEXT, thread_id TEXT, thread_name TEXT, is_group BOOLEAN, PRIMARY KEY (username, thread_id))", &[]).await.ok();
     scylla_session
 }
 
@@ -126,38 +141,73 @@ pub fn create_router(js: nats::jetstream::Context, scylla_session: Arc<Session>)
     let db_msg = scylla_session.clone();
     let db_reg = scylla_session.clone();
     let db_login = scylla_session.clone();
+    let db_thread_create = scylla_session.clone();
+    let db_thread_list = scylla_session.clone();
     
     let protected_routes = Router::new()
-        .route("/publish", post(move |Json(payload): Json<SendMessageRequest>| {
+        .route("/publish/:channel_id", post(move |Extension(user): Extension<CurrentUser>, Path(channel_id): Path<String>, Json(payload): Json<SendMessageRequest>| {
             let js_inner = js_pub.clone();
             let db_inner = db_pub.clone();
             async move {
                 let msg_id = Uuid::new_v4();
                 let ts = chrono::Utc::now().timestamp_millis();
-                db_inner.query("INSERT INTO influx_ks.messages (channel_id, message_id, sender, content, timestamp) VALUES ('global', ?, 'anonymous', ?, ?)", (msg_id, payload.content, ts)).await.ok();
-                let unique_subject = format!("influx.events.test.{}", Uuid::new_v4());
+                let _ = db_inner.query("INSERT INTO influx_ks.messages (channel_id, message_id, sender, content, timestamp) VALUES (?, ?, ?, ?, ?)", (&channel_id, msg_id, &user.username, &payload.content, ts)).await;
+                let unique_subject = format!("influx.events.{}", channel_id);
                 match js_inner.publish(unique_subject, "broadcast".into()).await {
                     Ok(_) => (StatusCode::OK, "Sent").into_response(),
                     Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "NATS Error").into_response()
                 }
             }
         }))
-        .route("/messages", get(move || {
+        .route("/messages/:channel_id", get(move |Extension(_user): Extension<CurrentUser>, Path(channel_id): Path<String>| {
             let db_inner = db_msg.clone();
             async move {
-                let result = db_inner.query("SELECT message_id, sender, content, timestamp FROM influx_ks.messages WHERE channel_id = 'global' LIMIT 50", &[]).await;
+                let result = db_inner.query("SELECT message_id, sender, content, timestamp FROM influx_ks.messages WHERE channel_id = ? LIMIT 50", (&channel_id,)).await;
                 match result {
                     Ok(rows) => {
                         let mut messages = Vec::new();
                         if let Some(it) = rows.rows {
                             for row in it {
-                                let (id, sender, content, timestamp): (Uuid, String, String, i64) = row.into_typed().unwrap();
-                                messages.push(Message { id, sender, content, timestamp });
+                                if let Ok((id, sender, content, timestamp)) = row.into_typed::<(Uuid, String, String, i64)>() {
+                                    messages.push(Message { id, sender, content, timestamp });
+                                }
                             }
                         }
                         Json(messages).into_response()
                     },
                     Err(_) => Json(vec![] as Vec<Message>).into_response()
+                }
+            }
+        }))
+        .route("/threads", post(move |Extension(user): Extension<CurrentUser>, Json(payload): Json<CreateThreadRequest>| {
+            let db_inner = db_thread_create.clone();
+            async move {
+                let thread_id = Uuid::new_v4().to_string();
+                let _ = db_inner.query("INSERT INTO influx_ks.threads (id, name, is_group) VALUES (?, ?, ?)", (&thread_id, &payload.name, payload.is_group)).await;
+                let mut members = payload.members;
+                if !members.contains(&user.username) { members.push(user.username.clone()); }
+                for member in members {
+                    let _ = db_inner.query("INSERT INTO influx_ks.user_threads (username, thread_id, thread_name, is_group) VALUES (?, ?, ?, ?)", (member, &thread_id, &payload.name, payload.is_group)).await;
+                }
+                Json(serde_json::json!({ "id": thread_id })).into_response()
+            }
+        }).get(move |Extension(user): Extension<CurrentUser>| {
+            let db_inner = db_thread_list.clone();
+            async move {
+                let result = db_inner.query("SELECT thread_id, thread_name, is_group FROM influx_ks.user_threads WHERE username = ?", (&user.username,)).await;
+                match result {
+                    Ok(rows) => {
+                        let mut threads = Vec::new();
+                        if let Some(it) = rows.rows {
+                            for row in it {
+                                if let Ok((id, name, is_group)) = row.into_typed::<(String, String, bool)>() {
+                                    threads.push(Thread { id, name, is_group });
+                                }
+                            }
+                        }
+                        Json(threads).into_response()
+                    },
+                    Err(_) => Json(vec![] as Vec<Thread>).into_response()
                 }
             }
         }))
@@ -176,7 +226,10 @@ pub fn create_router(js: nats::jetstream::Context, scylla_session: Arc<Session>)
                 let password_hash = argon2.hash_password(payload.password.as_bytes(), &salt).unwrap().to_string();
                 match db_inner.query("INSERT INTO influx_ks.users (username, password_hash) VALUES (?, ?)", (payload.username, password_hash)).await {
                     Ok(_) => StatusCode::CREATED.into_response(),
-                    Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                    Err(e) => {
+                        println!("Register Error: {:?}", e);
+                        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                    }
                 }
             }
         }))
@@ -186,12 +239,13 @@ pub fn create_router(js: nats::jetstream::Context, scylla_session: Arc<Session>)
                 let result = db_inner.query("SELECT password_hash FROM influx_ks.users WHERE username = ?", (payload.username.clone(),)).await;
                 if let Ok(rows) = result {
                     if let Some(row) = rows.rows.and_then(|r| r.into_iter().next()) {
-                        let (hash_str,): (String,) = row.into_typed().unwrap();
-                        if let Ok(parsed_hash) = PasswordHash::new(&hash_str) {
-                            if Argon2::default().verify_password(payload.password.as_bytes(), &parsed_hash).is_ok() {
-                                let access_token = create_jwt(&payload.username, 900);
-                                let refresh_token = create_jwt(&payload.username, 86400);
-                                return Json(AuthResponse { access_token, refresh_token }).into_response();
+                        if let Ok((hash_str,)) = row.into_typed::<(String,)>() {
+                            if let Ok(parsed_hash) = PasswordHash::new(&hash_str) {
+                                if Argon2::default().verify_password(payload.password.as_bytes(), &parsed_hash).is_ok() {
+                                    let access_token = create_jwt(&payload.username, 900);
+                                    let refresh_token = create_jwt(&payload.username, 86400);
+                                    return Json(AuthResponse { access_token, refresh_token }).into_response();
+                                }
                             }
                         }
                     }
@@ -227,6 +281,16 @@ async fn main() {
 }
 
 pub async fn handler() -> String { "Hello, InFlux Backend!".to_string() }
+
+pub fn create_jwt(username: &str, expiration_seconds: i64) -> String {
+    let expiration = chrono::Utc::now()
+        .checked_add_signed(chrono::Duration::seconds(expiration_seconds))
+        .expect("valid timestamp")
+        .timestamp() as usize;
+
+    let claims = Claims { sub: username.to_owned(), exp: expiration };
+    encode(&Header::default(), &claims, &EncodingKey::from_secret(JWT_SECRET)).unwrap()
+}
 
 pub fn derive_shared_secret(my_private: &StaticSecret, their_public: &PublicKey) -> [u8; 32] {
     let shared = my_private.diffie_hellman(their_public);
