@@ -1,2 +1,7 @@
 /state/
 /backend/target/
+/frontend/.next
+/frontend/node_modules
+/backend/registry
+/backend/.package-cache*
+/backend/.global-cache
