@@ -15,18 +15,22 @@ static RESOURCES: OnceCell<SharedResources> = OnceCell::const_new();
 
 pub async fn get_resources() -> &'static SharedResources {
     RESOURCES.get_or_init(|| async {
-        let nats_url = "nats://localhost:4222";
-        let cassandra_url = "localhost:9042";
+        let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
+        let cassandra_url = std::env::var("CASSANDRA_URL").unwrap_or_else(|_| "localhost:9042".to_string());
 
-        wait_for_cassandra(cassandra_url).await;
+        wait_for_cassandra(&cassandra_url).await;
 
         let stream_name = "shared_test_stream_auth";
-        let nats = setup_nats(stream_name, nats_url, "shared.auth.test.>").await;
-        let session = setup_cassandra(cassandra_url).await;
+        let nats = setup_nats(stream_name, &nats_url, "shared.auth.test.>").await;
+        let session = setup_cassandra(&cassandra_url).await;
 
         // Ensure fresh schema for auth tests
         session.query("DROP TABLE IF EXISTS influx_ks.users", &[]).await.ok();
+        session.query("DROP TABLE IF EXISTS influx_ks.threads", &[]).await.ok();
+        session.query("DROP TABLE IF EXISTS influx_ks.user_threads", &[]).await.ok();
         session.query("CREATE TABLE IF NOT EXISTS influx_ks.users (username TEXT PRIMARY KEY, password_hash TEXT, public_key TEXT)", &[]).await.ok();
+        session.query("CREATE TABLE IF NOT EXISTS influx_ks.threads (id TEXT PRIMARY KEY, name TEXT, is_group BOOLEAN, owner TEXT)", &[]).await.ok();
+        session.query("CREATE TABLE IF NOT EXISTS influx_ks.user_threads (username TEXT, thread_id TEXT, thread_name TEXT, is_group BOOLEAN, PRIMARY KEY (username, thread_id))", &[]).await.ok();
 
         SharedResources {
             nats,
@@ -56,5 +60,7 @@ async fn wait_for_cassandra(url: &str) {
 pub async fn cleanup_database(session: &Session) {
     session.query("TRUNCATE influx_ks.users", &[]).await.ok();
     session.query("TRUNCATE influx_ks.messages", &[]).await.ok();
+    session.query("TRUNCATE influx_ks.threads", &[]).await.ok();
+    session.query("TRUNCATE influx_ks.user_threads", &[]).await.ok();
     sleep(Duration::from_millis(200)).await;
 }

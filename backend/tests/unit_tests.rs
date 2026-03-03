@@ -1,7 +1,6 @@
 use influx_backend::*;
 use rand::rngs::OsRng;
 use x25519_dalek::{StaticSecret, PublicKey};
-use base64::{Engine as _, engine::general_purpose};
 
 #[test]
 fn test_asymmetric_handshake_and_encryption() {
