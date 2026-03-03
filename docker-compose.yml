@@ -1,8 +1,7 @@
-version: '3.8'
-
 services:
   spacetimedb:
-    image: clockworklabs/spacetimedb:latest
+    image: clockworklabs/spacetime:latest
+    command: ["start", "--listen-addr", "0.0.0.0:3000"]
     ports:
       - "3000:3000"
     volumes:
@@ -13,7 +12,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "3002:3000"
+      - "8080:8080"
     depends_on:
       - spacetimedb
 

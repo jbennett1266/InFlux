@@ -13,7 +13,7 @@ clear_ports() {
 cleanup() {
     echo ""
     echo "Shutting down InFlux development environment..."
-    kill $FRONTEND_PID 2>/dev/null
+    [ ! -z "$FRONTEND_PID" ] && kill $FRONTEND_PID 2>/dev/null
     docker compose down
     # Wait for processes to die
     sleep 1
@@ -28,8 +28,13 @@ trap cleanup SIGINT SIGTERM
 # Proactively clear ports before starting
 clear_ports
 
-echo "Starting InFlux Development Infrastructure (SpacetimeDB)..."
+echo "Starting InFlux Development Infrastructure (Docker Compose)..."
 docker compose up -d spacetimedb
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to start SpacetimeDB container."
+    exit 1
+fi
 
 echo "Waiting for SpacetimeDB to be ready (max 60s)..."
 RETRY_COUNT=0
@@ -46,20 +51,14 @@ done
 
 if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
   echo " SpacetimeDB failed to start in time."
+  docker compose logs spacetimedb
   exit 1
 fi
-
-echo "Deploying Backend SpacetimeDB Module..."
-cd backend
-# Note: In a real environment, we'd use spacetimedb publish
-# Here we simulate the module being active on the server
-# spacetimedb publish -d influx_chat
-cd ..
 
 echo "Starting Frontend..."
 cd frontend
 if [ ! -d "node_modules" ]; then
-  npm install
+  npm install --quiet
 fi
 # Run frontend and capture PID
 npm run dev &
@@ -69,7 +68,7 @@ cd ..
 echo "------------------------------------------------"
 echo "Services are running!"
 echo "SpacetimeDB: http://localhost:3000"
-echo "Frontend: http://localhost:8080"
+echo "Frontend:    http://localhost:8080"
 echo "Press Ctrl+C to stop all application processes."
 echo "------------------------------------------------"
 
