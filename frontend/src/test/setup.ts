@@ -1,23 +1,6 @@
 import '@testing-library/jest-dom';
 import { vi } from 'vitest';
 
-// Mock SpacetimeDB
-vi.mock('spacetimedb/sdk', () => ({
-  DbConnectionBuilder: vi.fn().mockImplementation(() => ({
-    withUri: vi.fn().mockReturnThis(),
-    withDatabaseName: vi.fn().mockReturnThis(),
-    onConnect: vi.fn().mockReturnThis(),
-    onConnectError: vi.fn().mockReturnThis(),
-    build: vi.fn().mockReturnValue({
-      db: { message: { onInsert: vi.fn() } },
-      subscriptionBuilder: vi.fn().mockReturnThis(),
-      subscribe: vi.fn(),
-      callReducer: vi.fn(),
-    }),
-  })),
-  DbConnectionImpl: vi.fn(),
-}));
-
 // Mock MediaStream and MediaDevices
 class MockMediaStream {
   getTracks() { return []; }

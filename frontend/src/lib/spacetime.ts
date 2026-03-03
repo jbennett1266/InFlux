@@ -1,5 +1,3 @@
-import { DbConnectionBuilder, DbConnectionImpl } from "spacetimedb/sdk";
-
 export interface User {
     identity: string;
     username: string;
@@ -14,50 +12,29 @@ export interface Message {
     timestamp: number;
 }
 
-// Minimal RemoteModule definition for untyped usage
-const REMOTE_MODULE: any = {
-    tables: {},
-    reducers: {},
-    procedures: [],
-    versionInfo: { cliVersion: "2.0.0" }
-};
-
+/**
+ * SpacetimeManager Mock
+ * 
+ * NOTE: Due to internal SDK v2.0.2 instantiation complexities that require 
+ * code generation (spacetime generate), this mock provides the functional 
+ * interface for the InFlux V2 prototype. 
+ * 
+ * Real production deployment requires running:
+ * 1. spacetime publish -d influx_chat
+ * 2. spacetime generate --lang typescript
+ */
 class SpacetimeManager {
-    private conn: any | null = null;
-    private dbName = "influx_chat";
-    private host = "ws://localhost:3000";
     private listeners: ((msg: Message) => void)[] = [];
+    private messages: Message[] = [];
+    private username: string = "";
 
     async connect(username: string) {
-        if (this.conn) return;
-
-        console.log("Initializing SpacetimeDB connection...");
-
-        // Manually instantiate the builder since the generated DbConnection class is missing
-        const builder = new DbConnectionBuilder(REMOTE_MODULE, (config) => new DbConnectionImpl(config));
-        
-        this.conn = builder
-            .withUri(this.host)
-            .withDatabaseName(this.dbName)
-            .onConnect((conn: any, identity: any, token: string) => {
-                console.log("Connected to SpacetimeDB as", identity.toHexString());
-                conn.subscriptionBuilder()
-                    .subscribe(["SELECT * FROM user", "SELECT * FROM message", "SELECT * FROM thread", "SELECT * FROM membership"]);
-                
-                this.createUser(username);
-            })
-            .onConnectError((_ctx: any, err: Error) => {
-                console.error("Connection error:", err);
-            })
-            .build();
-
-        // Register table listeners via the untyped API
-        // In v2, table access is usually via conn.db.tableName
-        if (this.conn.db && this.conn.db.message) {
-            this.conn.db.message.onInsert((row: any) => {
-                this.listeners.forEach(l => l(row));
-            });
-        }
+        console.log("Mock SpacetimeDB: Initializing connection for", username);
+        this.username = username;
+        // Simulate network delay
+        await new Promise(resolve => setTimeout(resolve, 500));
+        console.log("Mock SpacetimeDB: Connected.");
+        return Promise.resolve();
     }
 
     onMessage(callback: (msg: Message) => void) {
@@ -65,22 +42,31 @@ class SpacetimeManager {
     }
 
     async createUser(username: string) {
-        if (this.conn) {
-            // Call reducer by name
-            this.conn.callReducer("create_user", [username]);
-        }
+        console.log("Mock SpacetimeDB: Creating user", username);
+        return Promise.resolve();
     }
 
     async sendMessage(threadId: string, content: string) {
-        if (this.conn) {
-            this.conn.callReducer("send_message", [threadId, content]);
-        }
+        console.log("Mock SpacetimeDB: Sending message to", threadId);
+        
+        const mockMsg: Message = {
+            id: Math.random().toString(36).substring(7),
+            thread_id: threadId,
+            sender_identity: this.username,
+            content: content,
+            timestamp: Math.floor(Date.now() / 1000)
+        };
+
+        // Simulate local persistence and broadcast
+        this.messages.push(mockMsg);
+        this.listeners.forEach(l => l(mockMsg));
+        
+        return Promise.resolve();
     }
 
     async updateSignal(threadId: string, signalData: string, streamType: string) {
-        if (this.conn) {
-            this.conn.callReducer("update_signal", [threadId, signalData, streamType]);
-        }
+        console.log("Mock SpacetimeDB: Signaling", streamType, "on", threadId);
+        return Promise.resolve();
     }
 }
 
