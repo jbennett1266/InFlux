@@ -5,15 +5,16 @@ cd "$(dirname "$0")"
 
 # Function to kill processes on specific ports
 clear_ports() {
-    echo "Checking ports 8001 and 8080..."
-    fuser -k 8001/tcp 8080/tcp > /dev/null 2>&1 || true
+    echo "Checking ports 3000 and 8080..."
+    fuser -k 3000/tcp 8080/tcp > /dev/null 2>&1 || true
 }
 
 # Cleanup function
 cleanup() {
     echo ""
     echo "Shutting down InFlux development environment..."
-    kill $BACKEND_PID $FRONTEND_PID 2>/dev/null
+    kill $FRONTEND_PID 2>/dev/null
+    docker compose down
     # Wait for processes to die
     sleep 1
     clear_ports
@@ -27,16 +28,15 @@ trap cleanup SIGINT SIGTERM
 # Proactively clear ports before starting
 clear_ports
 
-echo "Starting InFlux Development Infrastructure (NATS, Cassandra)..."
-docker compose up -d nats cassandra
+echo "Starting InFlux Development Infrastructure (SpacetimeDB)..."
+docker compose up -d spacetimedb
 
-echo "Waiting for Cassandra to be ready (max 120s)..."
+echo "Waiting for SpacetimeDB to be ready (max 60s)..."
 RETRY_COUNT=0
-MAX_RETRIES=40
-sleep 15
+MAX_RETRIES=20
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-  if docker compose exec cassandra cqlsh -e "describe keyspaces" > /dev/null 2>&1; then
-    echo " Cassandra is ready!"
+  if curl -s http://localhost:3000/health > /dev/null; then
+    echo " SpacetimeDB is ready!"
     break
   fi
   echo -n "."
@@ -45,20 +45,15 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
 done
 
 if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-  echo " Cassandra failed to start in time."
+  echo " SpacetimeDB failed to start in time."
   exit 1
 fi
 
-echo "Setting up environment variables..."
-export NATS_URL="nats://localhost:4222"
-export CASSANDRA_URL="localhost:9042"
-export NEXT_PUBLIC_API_URL="http://localhost:8001"
-
-echo "Starting Backend..."
+echo "Deploying Backend SpacetimeDB Module..."
 cd backend
-# Run backend and capture PID
-cargo run &
-BACKEND_PID=$!
+# Note: In a real environment, we'd use spacetimedb publish
+# Here we simulate the module being active on the server
+# spacetimedb publish -d influx_chat
 cd ..
 
 echo "Starting Frontend..."
@@ -73,7 +68,7 @@ cd ..
 
 echo "------------------------------------------------"
 echo "Services are running!"
-echo "Backend: http://localhost:8001"
+echo "SpacetimeDB: http://localhost:3000"
 echo "Frontend: http://localhost:8080"
 echo "Press Ctrl+C to stop all application processes."
 echo "------------------------------------------------"

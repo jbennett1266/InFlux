@@ -54,37 +54,29 @@ def main():
 
     if success:
         # 2. Health Checks with retries
-        print("\nRunning health checks with retries (up to 180s)...")
+        print("\nRunning health checks with retries (up to 120s)...")
         
         backend_up = False
         frontend_up = False
-        nats_up = False
-        cassandra_up = False
         
         check_start = time.time()
-        while time.time() - check_start < 180:
+        while time.time() - check_start < 120:
             if not backend_up:
-                backend_up = check_url("localhost", 8001)
+                backend_up = check_url("localhost", 3000)
             if not frontend_up:
-                frontend_up = check_url("localhost", 8080) or check_url("localhost", 3000)
-            if not nats_up:
-                nats_up = check_port("localhost", 4222)
-            if not cassandra_up:
-                cassandra_up = check_port("localhost", 9042)
+                frontend_up = check_url("localhost", 8080)
             
-            if backend_up and frontend_up and nats_up and cassandra_up:
+            if backend_up and frontend_up:
                 break
             
-            print(f"Status: Backend={backend_up}, Frontend={frontend_up}, NATS={nats_up}, Cassandra={cassandra_up}. Retrying in 10s...")
-            time.sleep(10)
+            print(f"Status: SpacetimeDB={backend_up}, Frontend={frontend_up}. Retrying in 5s...")
+            time.sleep(5)
         
         print(f"\nFinal Results:")
-        print(f"Backend: {'UP' if backend_up else 'DOWN'}")
+        print(f"SpacetimeDB: {'UP' if backend_up else 'DOWN'}")
         print(f"Frontend: {'UP' if frontend_up else 'DOWN'}")
-        print(f"NATS: {'UP' if nats_up else 'DOWN'}")
-        print(f"Cassandra: {'UP' if cassandra_up else 'DOWN'}")
         
-        if backend_up and frontend_up and nats_up and cassandra_up:
+        if backend_up and frontend_up:
             print("\nSUCCESS: Environment is healthy.")
             ret_code = 0
         else:

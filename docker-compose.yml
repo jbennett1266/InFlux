@@ -1,17 +1,12 @@
 version: '3.8'
 
 services:
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+  spacetimedb:
+    image: clockworklabs/spacetimedb:latest
     ports:
       - "3000:3000"
     volumes:
-      - ./backend:/app
-    depends_on:
-      - nats
-      - cassandra
+      - spacetimedb-data:/var/lib/spacetimedb
 
   frontend:
     build:
@@ -20,23 +15,7 @@ services:
     ports:
       - "3002:3000"
     depends_on:
-      - backend
-
-  nats:
-    image: nats:2.10-alpine
-    ports:
-      - "4222:4222"
-      - "8222:8222" # NATS monitoring port
-    command: -js # Enable JetStream
-
-  cassandra:
-    image: cassandra:latest
-    ports:
-      - "9042:9042"
-    environment:
-      - CASSANDRA_CLUSTER_NAME=influx_cluster
-      - CASSANDRA_DC=dc1
-      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - spacetimedb
 
 volumes:
-  cassandra-data:
+  spacetimedb-data:
