@@ -80,17 +80,17 @@ export default function StreamingComponent({ threadId, currentUserIdentity }: St
             <div className="flex items-center justify-between mb-4">
                 <h3 className="text-sm font-bold text-blue-400 uppercase tracking-wider">Live Stream</h3>
                 <div className="flex space-x-2">
-                    <button onClick={() => startStream("video")} className="p-2 hover:bg-blue-500/20 rounded-full transition-colors">
+                    <button onClick={() => startStream("video")} aria-label="video" className="p-2 hover:bg-blue-500/20 rounded-full transition-colors">
                         <Video size={18} className="text-blue-400" />
                     </button>
-                    <button onClick={() => startStream("audio")} className="p-2 hover:bg-green-500/20 rounded-full transition-colors">
+                    <button onClick={() => startStream("audio")} aria-label="audio" className="p-2 hover:bg-green-500/20 rounded-full transition-colors">
                         <Mic size={18} className="text-green-400" />
                     </button>
-                    <button onClick={() => startStream("screen")} className="p-2 hover:bg-purple-500/20 rounded-full transition-colors">
+                    <button onClick={() => startStream("screen")} aria-label="screen" className="p-2 hover:bg-purple-500/20 rounded-full transition-colors">
                         <Monitor size={18} className="text-purple-400" />
                     </button>
                     {stream && (
-                        <button onClick={stopStream} className="p-2 hover:bg-red-500/20 rounded-full transition-colors">
+                        <button onClick={stopStream} aria-label="PhoneOff" className="p-2 hover:bg-red-500/20 rounded-full transition-colors">
                             <PhoneOff size={18} className="text-red-400" />
                         </button>
                     )}

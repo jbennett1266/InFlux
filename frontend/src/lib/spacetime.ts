@@ -1,4 +1,4 @@
-import { DbConnection } from "spacetimedb/sdk";
+import { DbConnectionBuilder, DbConnectionImpl } from "spacetimedb/sdk";
 
 export interface User {
     identity: string;
@@ -14,6 +14,14 @@ export interface Message {
     timestamp: number;
 }
 
+// Minimal RemoteModule definition for untyped usage
+const REMOTE_MODULE: any = {
+    tables: {},
+    reducers: {},
+    procedures: [],
+    versionInfo: { cliVersion: "2.0.0" }
+};
+
 class SpacetimeManager {
     private conn: any | null = null;
     private dbName = "influx_chat";
@@ -23,30 +31,33 @@ class SpacetimeManager {
     async connect(username: string) {
         if (this.conn) return;
 
-        // In SDK v2, we use DbConnection.builder()
-        // Note: For untyped access, we might need a slightly different approach
-        // but the builder is the primary entry point.
-        this.conn = DbConnection.builder()
+        console.log("Initializing SpacetimeDB connection...");
+
+        // Manually instantiate the builder since the generated DbConnection class is missing
+        const builder = new DbConnectionBuilder(REMOTE_MODULE, (config) => new DbConnectionImpl(config));
+        
+        this.conn = builder
             .withUri(this.host)
             .withDatabaseName(this.dbName)
-            .onConnect((conn, identity, token) => {
+            .onConnect((conn: any, identity: any, token: string) => {
                 console.log("Connected to SpacetimeDB as", identity.toHexString());
                 conn.subscriptionBuilder()
-                    .onApplied(() => console.log("Subscription applied"))
                     .subscribe(["SELECT * FROM user", "SELECT * FROM message", "SELECT * FROM thread", "SELECT * FROM membership"]);
                 
-                // Call create_user reducer
                 this.createUser(username);
             })
-            .onConnectError((ctx, err) => {
+            .onConnectError((_ctx: any, err: Error) => {
                 console.error("Connection error:", err);
             })
             .build();
 
-        // Register table listeners
-        this.conn.db.message.onInsert((row: any) => {
-            this.listeners.forEach(l => l(row));
-        });
+        // Register table listeners via the untyped API
+        // In v2, table access is usually via conn.db.tableName
+        if (this.conn.db && this.conn.db.message) {
+            this.conn.db.message.onInsert((row: any) => {
+                this.listeners.forEach(l => l(row));
+            });
+        }
     }
 
     onMessage(callback: (msg: Message) => void) {
@@ -54,15 +65,22 @@ class SpacetimeManager {
     }
 
     async createUser(username: string) {
-        this.conn?.reducers.create_user(username);
+        if (this.conn) {
+            // Call reducer by name
+            this.conn.callReducer("create_user", [username]);
+        }
     }
 
     async sendMessage(threadId: string, content: string) {
-        this.conn?.reducers.send_message(threadId, content);
+        if (this.conn) {
+            this.conn.callReducer("send_message", [threadId, content]);
+        }
     }
 
     async updateSignal(threadId: string, signalData: string, streamType: string) {
-        this.conn?.reducers.update_signal(threadId, signalData, streamType);
+        if (this.conn) {
+            this.conn.callReducer("update_signal", [threadId, signalData, streamType]);
+        }
     }
 }
 

@@ -121,7 +121,7 @@ export default function Home() {
         <footer className="p-8 bg-gray-950 border-t border-gray-900">
           <form onSubmit={sendMessage} className="relative group">
             <input type="text" placeholder={`MSG_TO: #${activeThread.toUpperCase()}`} className="w-full bg-black border border-gray-800 p-5 rounded-2xl text-blue-300 placeholder:text-gray-800 focus:outline-none focus:border-blue-500/50 transition-all text-sm shadow-2xl" value={newMessage} onChange={(e) => setNewMessage(e.target.value)} />
-            <button type="submit" className="absolute right-4 top-1/2 -translate-y-1/2 p-2.5 bg-blue-600/10 hover:bg-blue-600 text-blue-500 hover:text-white rounded-xl transition-all">
+            <button type="submit" aria-label="Send Message" className="absolute right-4 top-1/2 -translate-y-1/2 p-2.5 bg-blue-600/10 hover:bg-blue-600 text-blue-500 hover:text-white rounded-xl transition-all">
               <Send className="w-5 h-5" />
             </button>
           </form>
