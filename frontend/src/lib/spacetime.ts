@@ -1,4 +1,4 @@
-import { SpacetimeDBClient } from "spacetimedb/sdk";
+import { DbConnection } from "spacetimedb/sdk";
 
 export interface User {
     identity: string;
@@ -15,30 +15,38 @@ export interface Message {
 }
 
 class SpacetimeManager {
-    private client: SpacetimeDBClient | null = null;
+    private conn: any | null = null;
     private dbName = "influx_chat";
     private host = "ws://localhost:3000";
     private listeners: ((msg: Message) => void)[] = [];
 
     async connect(username: string) {
-        if (this.client) return;
+        if (this.conn) return;
 
-        this.client = new SpacetimeDBClient(this.host, this.dbName);
-        
-        this.client.onConnect(() => {
-            console.log("Connected to SpacetimeDB");
-            this.client?.subscribe(["SELECT * FROM user", "SELECT * FROM message", "SELECT * FROM thread", "SELECT * FROM membership"]);
+        // In SDK v2, we use DbConnection.builder()
+        // Note: For untyped access, we might need a slightly different approach
+        // but the builder is the primary entry point.
+        this.conn = DbConnection.builder()
+            .withUri(this.host)
+            .withDatabaseName(this.dbName)
+            .onConnect((conn, identity, token) => {
+                console.log("Connected to SpacetimeDB as", identity.toHexString());
+                conn.subscriptionBuilder()
+                    .onApplied(() => console.log("Subscription applied"))
+                    .subscribe(["SELECT * FROM user", "SELECT * FROM message", "SELECT * FROM thread", "SELECT * FROM membership"]);
+                
+                // Call create_user reducer
+                this.createUser(username);
+            })
+            .onConnectError((ctx, err) => {
+                console.error("Connection error:", err);
+            })
+            .build();
+
+        // Register table listeners
+        this.conn.db.message.onInsert((row: any) => {
+            this.listeners.forEach(l => l(row));
         });
-
-        this.client.onItemInserted((table, row) => {
-            if (table.name === "message") {
-                const msg = row as unknown as Message;
-                this.listeners.forEach(l => l(msg));
-            }
-        });
-
-        await this.client.connect();
-        this.createUser(username);
     }
 
     onMessage(callback: (msg: Message) => void) {
@@ -46,15 +54,15 @@ class SpacetimeManager {
     }
 
     async createUser(username: string) {
-        this.client?.call("create_user", [username]);
+        this.conn?.reducers.create_user(username);
     }
 
     async sendMessage(threadId: string, content: string) {
-        this.client?.call("send_message", [threadId, content]);
+        this.conn?.reducers.send_message(threadId, content);
     }
 
     async updateSignal(threadId: string, signalData: string, streamType: string) {
-        this.client?.call("update_signal", [threadId, signalData, streamType]);
+        this.conn?.reducers.update_signal(threadId, signalData, streamType);
     }
 }
 
