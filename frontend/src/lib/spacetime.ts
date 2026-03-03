@@ -1,19 +1,9 @@
 import { SpacetimeDBClient } from "spacetimedb/sdk";
 
-// Note: In a real SpacetimeDB app, these types are usually generated 
-// by `spacetimedb generate`. Here we define them manually for the prototype.
-
 export interface User {
     identity: string;
     username: string;
     status: string;
-}
-
-export interface Thread {
-    id: string;
-    name: string;
-    is_group: boolean;
-    owner: string;
 }
 
 export interface Message {
@@ -24,35 +14,47 @@ export interface Message {
     timestamp: number;
 }
 
-export interface StreamingPeer {
-    user_identity: string;
-    thread_id: string;
-    signal_data: string;
-    stream_type: string;
-}
-
 class SpacetimeManager {
     private client: SpacetimeDBClient | null = null;
     private dbName = "influx_chat";
-    private host = "http://localhost:3000";
+    private host = "ws://localhost:3000";
+    private listeners: ((msg: Message) => void)[] = [];
 
-    async connect() {
-        // This is a placeholder for actual connection logic
-        // SpacetimeDB SDK typically handles identity and subscriptions
-        console.log("Connecting to SpacetimeDB...");
+    async connect(username: string) {
+        if (this.client) return;
+
+        this.client = new SpacetimeDBClient(this.host, this.dbName);
+        
+        this.client.onConnect(() => {
+            console.log("Connected to SpacetimeDB");
+            this.client?.subscribe(["SELECT * FROM user", "SELECT * FROM message", "SELECT * FROM thread", "SELECT * FROM membership"]);
+        });
+
+        this.client.onItemInserted((table, row) => {
+            if (table.name === "message") {
+                const msg = row as unknown as Message;
+                this.listeners.forEach(l => l(msg));
+            }
+        });
+
+        await this.client.connect();
+        this.createUser(username);
     }
 
-    // Wrappers for reducers
-    async createUser(username: String) {
-        console.log("Calling reducer: create_user", username);
+    onMessage(callback: (msg: Message) => void) {
+        this.listeners.push(callback);
+    }
+
+    async createUser(username: string) {
+        this.client?.call("create_user", [username]);
     }
 
     async sendMessage(threadId: string, content: string) {
-        console.log("Calling reducer: send_message", threadId, content);
+        this.client?.call("send_message", [threadId, content]);
     }
 
     async updateSignal(threadId: string, signalData: string, streamType: string) {
-        console.log("Calling reducer: update_signal", threadId, streamType);
+        this.client?.call("update_signal", [threadId, signalData, streamType]);
     }
 }
 

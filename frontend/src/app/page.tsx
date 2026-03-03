@@ -14,9 +14,17 @@ export default function Home() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    await spacetime.createUser(username);
+    await spacetime.connect(username);
     setView("dashboard");
   };
+
+  useEffect(() => {
+    if (view === "dashboard") {
+      spacetime.onMessage((msg) => {
+        setMessages((prev) => [...prev, msg]);
+      });
+    }
+  }, [view]);
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
