@@ -10,12 +10,18 @@ interface StreamingComponentProps {
 }
 
 export default function StreamingComponent({ threadId, currentUserIdentity }: StreamingComponentProps) {
-    const [stream, setStream] = useState<MediaStream | null>(null);
+    const [stream, setStream] = useState<any>(null);
     const [type, setType] = useState<"video" | "audio" | "screen" | null>(null);
+    const [isMounted, setIsMounted] = useState(false);
     const videoRef = useRef<HTMLVideoElement>(null);
-    const peerConnection = useRef<RTCPeerConnection | null>(null);
+    const peerConnection = useRef<any>(null);
+
+    useEffect(() => {
+        setIsMounted(true);
+    }, []);
 
     const startStream = async (streamType: "video" | "audio" | "screen") => {
+        if (typeof window === "undefined") return;
         try {
             let mediaStream: MediaStream;
             if (streamType === "screen") {
@@ -59,11 +65,15 @@ export default function StreamingComponent({ threadId, currentUserIdentity }: St
     };
 
     const stopStream = () => {
-        stream?.getTracks().forEach(track => track.stop());
+        if (stream) {
+            (stream as MediaStream).getTracks().forEach(track => track.stop());
+        }
         setStream(null);
         setType(null);
         peerConnection.current?.close();
     };
+
+    if (!isMounted) return null;
 
     return (
         <div className="p-4 bg-gray-900 rounded-lg shadow-xl border border-blue-500/30">

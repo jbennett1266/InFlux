@@ -1,4 +1,4 @@
-import { SpacetimeDBClient, Identity } from "spacetimedb";
+import { SpacetimeDBClient } from "spacetimedb/sdk";
 
 // Note: In a real SpacetimeDB app, these types are usually generated 
 // by `spacetimedb generate`. Here we define them manually for the prototype.
